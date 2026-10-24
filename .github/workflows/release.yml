@@ -72,7 +72,9 @@ jobs:
           python3 tools/release_train.py decide --kind game ${HEAD_SHA:+--head "$HEAD_SHA"} ${FORCE:+--force} | tee decision.json
           echo "### $(jq -r '.reason' decision.json)" >> "$GITHUB_STEP_SUMMARY"
           # The version the programs are built with (docs/versioning.md): the tag without its v.
-          tag=$(jq -r '.tag' decision.json)
+          tag=$(jq -r '.tag // empty' decision.json 2>/dev/null || true)
+          # Fork-only build (some-du6e/horizon): the decision can't read upstream's pull requests here.
+          tag=${tag:-v0.2.4-hackclub}
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           # A dry run builds whatever the decision, to test the builds.
           if [[ "${{ steps.mode.outputs.dry_run }}" == true ]]; then echo "release=true" >> "$GITHUB_OUTPUT"; fi
