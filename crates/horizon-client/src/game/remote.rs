@@ -108,6 +108,10 @@ pub(super) struct Remote {
     status: String,
     pub(super) entity_id: i32,
     dimension: DimensionType,
+    /// The level's key (`minecraft:overworld`): where its far terrain is kept.
+    pub(super) level: String,
+    /// The login's hashed seed: Bobby's folder for the level (`server_terrain::find_bobby`).
+    pub(super) hashed_seed: i64,
     biome_map: Vec<u16>,
     biome_bits: u8,
     view_distance: i32,
@@ -389,6 +393,8 @@ impl Game<'_> {
             status: "Connecting to the server...".into(),
             entity_id: 0,
             dimension: DimensionType::vanilla("minecraft:overworld"),
+            level: "minecraft:overworld".into(),
+            hashed_seed: 0,
             biome_map: Vec::new(),
             biome_bits: 7,
             view_distance: self.settings.render_distance,
@@ -949,6 +955,8 @@ impl Game<'_> {
         let dimension = r.registries.dimension(spawn.dimension_type);
         let same = r.dimension.name == dimension.name && keep_world;
         r.dimension = dimension;
+        r.level = spawn.dimension.clone();
+        r.hashed_seed = spawn.seed;
         r.game_mode = spawn.game_type;
         r.loaded_sent = false;
         // A replacement LocalPlayer has a fresh sendPosition baseline.
@@ -1151,6 +1159,15 @@ impl Game<'_> {
             (x - r.chunk_center.0).abs() <= range && (z - r.chunk_center.1).abs() <= range
         })
     }
+    /// A column the client no longer holds; far terrain keeps it as it was
+    /// last (`server_terrain`).
+    fn forget_remote_chunk(&mut self, x: i32, z: i32) {
+        if let Some(chunk) = self.streaming.forget(&mut self.world, x, z)
+            && let Some(lod) = &mut self.lod
+        {
+            lod.observe(chunk, self.res.facts());
+        }
+    }
     /// The columns a moved or resized storage no longer holds.
     fn drop_remote_chunks_out_of_range(&mut self) {
         let gone: Vec<(i32, i32)> = self
@@ -1161,7 +1178,7 @@ impl Game<'_> {
             .filter(|&(x, z)| !self.remote_chunk_in_range(x, z))
             .collect();
         for (x, z) in gone {
-            self.streaming.forget(&mut self.world, x, z);
+            self.forget_remote_chunk(x, z);
             self.world
                 .block_entities
                 .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
@@ -1712,7 +1729,7 @@ impl Game<'_> {
             C::LightUpdate(p) => self.remote_light_update(&p),
             C::ForgetLevelChunk(p) => {
                 let [x, z] = p.pos;
-                self.streaming.forget(&mut self.world, x, z);
+                self.forget_remote_chunk(x, z);
                 self.world
                     .block_entities
                     .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));

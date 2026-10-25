@@ -232,7 +232,7 @@ impl Column {
     }
 }
 /// A chunk's 256 columns (`Column::from_chunk`), on the far-terrain worker.
-fn summarize(chunk: &Chunk, kinds: &[u8]) -> Arc<[Column; 256]> {
+pub(crate) fn summarize(chunk: &Chunk, kinds: &[u8]) -> Arc<[Column; 256]> {
     Arc::new(std::array::from_fn(|i| {
         Column::from_chunk(chunk, kinds, (i & 15) as i32, (i >> 4) as i32)
     }))
@@ -244,7 +244,7 @@ const FLUID: u8 = 2;
 const AIR: u8 = 4;
 /// What `Column::from_chunk` needs of each block state, read from the facts
 /// once: matching their names for every block made observing a chunk slow.
-fn state_kinds(facts: &BlockFacts) -> Vec<u8> {
+pub(crate) fn state_kinds(facts: &BlockFacts) -> Vec<u8> {
     (0..facts.states.len())
         .map(|i| {
             let state = BlockStateId(i as u32);
@@ -664,7 +664,9 @@ impl Lod {
                             let (Some(chunk), Some(kinds)) = (chunk, worker.kinds.get()) else {
                                 continue;
                             };
-                            Done::Observed(key, ReducedColumns::new(summarize(&chunk, kinds)))
+                            let columns = summarize(&chunk, kinds);
+                            sampler.observed(key, &columns);
+                            Done::Observed(key, ReducedColumns::new(columns))
                         }
                         Job::RequestDetail { chunks, center } => {
                             sampler.request_detail(&chunks, center);
