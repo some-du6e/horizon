@@ -1,5 +1,5 @@
 //! `horizon-mod.toml`, a mod's manifest, and the `.hmod` file around it.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     io::Read,
@@ -20,6 +20,9 @@ pub const APIS: [&str; 2] = [API, "0.2"];
 /// Namespaces no mod may claim: vanilla's, the convention tags' (mods add
 /// to those, docs/mods.md) and the game's own.
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
+/// A mod's data (capability `storage`), in `horizon-mods/` beside the mods
+/// (`find` never mistakes it for a mod: it has no manifest).
+pub const STORAGE_DIR: &str = ".horizon-mod-data";
 /// The biggest `mod.wasm` a mod may ship.
 const MAX_WASM: u64 = 32 << 20;
 
@@ -46,9 +49,15 @@ pub struct Manifest {
     /// that are on may share one (`content::clash`).
     #[serde(default)]
     pub namespaces: Vec<String>,
+    /// The experimental capabilities the mod opts into (`["ui"]`): each one
+    /// it lists in `capabilities` must be named here too, since it may change
+    /// in any release (docs/api/stability.md). One no longer experimental is
+    /// accepted here, so the manifest keeps loading once it is promoted.
+    #[serde(default)]
+    pub experimental: Vec<Capability>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
     /// Runs in the player's game only (HUD, keys, chat commands).
@@ -62,7 +71,7 @@ pub enum Side {
 
 /// What a mod may do beyond writing its log. Each is a WIT interface the
 /// component imports; the player sees them before turning the mod on.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
     GameRead,
@@ -72,14 +81,18 @@ pub enum Capability {
     /// New blocks and items from the mod's `data/` (API 0.2): no WIT
     /// interface, the game reads them before the world loads.
     Registries,
+    /// A screen the mod owns and a settings page in Options > Mods, drawn
+    /// with the menus' own widgets (interface `ui`, calls `ui-events`).
+    Ui,
 }
 impl Capability {
-    pub const ALL: [Capability; 5] = [
+    pub const ALL: [Capability; 6] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
         Capability::Storage,
         Capability::Registries,
+        Capability::Ui,
     ];
     /// The WIT interface it grants, in `horizon:mods`.
     pub fn interface(self) -> &'static str {
@@ -89,7 +102,13 @@ impl Capability {
             Capability::Hud => "hud",
             Capability::Storage => "storage",
             Capability::Registries => "registries",
+            Capability::Ui => "ui",
         }
+    }
+    /// May change in any release: a mod uses it only with
+    /// `experimental = ["<name>"]` in its manifest.
+    pub fn is_experimental(self) -> bool {
+        matches!(self, Capability::Ui)
     }
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
@@ -99,6 +118,7 @@ impl Capability {
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
             Capability::Registries => "add blocks and items to your worlds",
+            Capability::Ui => "show its own screens and a settings page",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -129,6 +149,7 @@ impl fmt::Display for Capability {
             Capability::Hud => "hud",
             Capability::Storage => "storage",
             Capability::Registries => "registries",
+            Capability::Ui => "ui",
         };
         f.write_str(name)
     }
@@ -157,6 +178,16 @@ impl Manifest {
         if m.capabilities.contains(&Capability::Registries) && m.api == API {
             return Err(format!(
                 "{MANIFEST}: capability registries needs api = \"0.2\""
+            ));
+        }
+        if let Some(c) = m
+            .capabilities
+            .iter()
+            .find(|c| c.is_experimental() && !m.experimental.contains(c))
+        {
+            return Err(format!(
+                "{MANIFEST}: capability {c} is experimental and may change in any release: \
+                 add experimental = [\"{c}\"] to use it"
             ));
         }
         if !m.namespaces.is_empty() && !m.capabilities.contains(&Capability::Registries) {
@@ -410,5 +441,22 @@ capabilities = ["game-read", "hud"]
         assert_eq!(p.manifest.id, "coords_hud");
         assert_eq!(p.wasm.as_deref(), Some(&b"\0asm"[..]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn experimental_capabilities_need_the_opt_in() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
+        let err = Manifest::parse(&format!("{base}capabilities = [\"ui\"]\n")).unwrap_err();
+        assert!(err.contains("experimental = [\"ui\"]"), "{err}");
+        let m = Manifest::parse(&format!(
+            "{base}capabilities = [\"ui\"]\nexperimental = [\"ui\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(m.experimental, [Capability::Ui]);
+        // A capability that is (or became) stable is fine in the list.
+        Manifest::parse(&format!(
+            "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
+        ))
+        .unwrap();
     }
 }

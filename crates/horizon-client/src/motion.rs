@@ -167,6 +167,9 @@ pub enum MotionEvent {
     InsidePortal {
         pos: BlockPos,
     },
+    /// `WitherRoseBlock.entityInside`: the player's box swept through a
+    /// wither rose; the server adds its Wither unless peaceful.
+    InsideWitherRose,
     /// `ServerPlayer.checkFallDamage` after a mace smash: block particles
     /// from the landing block, more the further the fall.
     SmashLanding {
@@ -300,6 +303,10 @@ pub struct PlayerMotion {
     /// it travels on the server: `isLocalInstanceAuthoritative` is false, so
     /// its moves check no fall damage.
     pub server_copy: bool,
+    /// A client's copy of its own player (`Level.isClientSide`): only the
+    /// server hurts it (`Entity.hurt` does nothing on a client) and ticks its
+    /// food (`ServerPlayer.tick`). Its hurt animation comes from the server.
+    pub client_side: bool,
     /// `Entity.applyEffectsFromBlocks` runs after travel (always in the game;
     /// differential fixtures turn it off where their reference does).
     pub block_effects: bool,
@@ -465,6 +472,7 @@ impl PlayerMotion {
             freeze_immune: false,
             old_position: position,
             server_copy: false,
+            client_side: false,
             block_effects: true,
             powder_snow_entered: Vec::new(),
             hurt_log: Vec::new(),
@@ -1078,11 +1086,26 @@ impl MotionWorld<'_, '_, '_> {
     }
     /// What `applyEffectsFromBlocks` does to a server's player along the
     /// moves its client sent since `from` (in its history): the damage of
-    /// magma, cactus, lit campfires and grown sweet berry bushes. Its client
-    /// moves it, so the slowing and the rest are the client's.
+    /// magma, cactus, lit campfires and grown sweet berry bushes, and powder
+    /// snow's FREEZE, then `LivingEntity.aiStep`'s freezing and its damage.
+    /// Its client moves it, so the slowing and the rest are the client's.
     pub fn server_block_damage(&mut self, from: Vec3) -> Result<()> {
         self.player.old_position = from;
-        self.effects_from_blocks(true)
+        // Entity.baseTick
+        self.player.was_in_powder_snow = self.player.in_powder_snow;
+        self.player.in_powder_snow = false;
+        self.effects_from_blocks(true)?;
+        // LivingEntity.aiStep "freezing" (server).
+        if !self.player.in_powder_snow || !self.player.can_freeze() {
+            self.player.ticks_frozen = (self.player.ticks_frozen - 2).max(0);
+        }
+        if self.player.health.tick_count % 40 == 0
+            && self.player.is_fully_frozen()
+            && self.player.can_freeze()
+        {
+            self.freeze_damage()?;
+        }
+        Ok(())
     }
     fn effects_from_blocks(&mut self, damage_only: bool) -> Result<()> {
         use horizon_world::entity_move::MovementRecord;
@@ -1186,7 +1209,7 @@ impl MotionWorld<'_, '_, '_> {
                 groups += 1;
                 last_step = step;
             }
-            if groups == 1 {
+            if groups == 1 && !damage_only {
                 // A later group finds the fire already out.
                 self.player.powder_snow_entered.push(p);
             }
@@ -1289,9 +1312,13 @@ impl MotionWorld<'_, '_, '_> {
                 }
             };
             if inside && visited.insert(p.pack()) {
-                // CactusBlock and CampfireBlock.entityInside (`entity.hurt`).
+                // CactusBlock and CampfireBlock.entityInside (`entity.hurt`),
+                // and WitherRoseBlock's server-side effect.
                 match name {
                     "minecraft:cactus" => self.environment_hurt("minecraft:cactus", 1.0)?,
+                    "minecraft:wither_rose" => {
+                        self.player.events.push(MotionEvent::InsideWitherRose);
+                    }
                     "minecraft:campfire" | "minecraft:soul_campfire" => {
                         let lit = self
                             .assets
@@ -1311,6 +1338,8 @@ impl MotionWorld<'_, '_, '_> {
                     "minecraft:sweet_berry_bush" if damage_only => {
                         self.sweet_berry_bush_damage(state)?;
                     }
+                    // PowderSnowBlock.entityInside's FREEZE.
+                    "minecraft:powder_snow" if damage_only => entered.push((step, p)),
                     _ => {}
                 }
                 if damage_only {
@@ -1753,6 +1782,11 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         state: BlockStateId,
         position: BlockPos,
     ) -> Result<()> {
+        // LivingEntity.aiStep: Slow Falling and Levitation reset the fall
+        // distance every tick, so landing under either does not hurt.
+        if self.player.status.slow_falling || self.player.status.levitation.is_some() {
+            self.player.fall_distance = 0.0;
+        }
         if self.player.spawn_extra_particles_on_fall && grounded && self.player.fall_distance > 0.0
         {
             self.player.events.push(MotionEvent::SmashLanding {
@@ -2359,6 +2393,76 @@ mod tests {
     }
 
     #[test]
+    fn standing_in_a_wither_rose_asks_for_its_effect() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let rose = assets
+            .registry
+            .default_state("minecraft:wither_rose")
+            .unwrap();
+        scene.set(20, 4, 20, rose).unwrap();
+        let roses = |player: &PlayerMotion| {
+            player
+                .events
+                .iter()
+                .filter(|e| matches!(e, MotionEvent::InsideWitherRose))
+                .count()
+        };
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
+        MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        }
+        .controlled_simulation_tick(Default::default())
+        .unwrap();
+        assert_eq!(roses(&player), 1);
+        // A server's player: its client moved it, the server applies the effect.
+        player.events.clear();
+        let from = player.position;
+        MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        }
+        .server_block_damage(from)
+        .unwrap();
+        assert_eq!(roses(&player), 1);
+        // Two blocks away, nothing.
+        let mut away = PlayerMotion::new(&resources, Vec3::new(22.5, 4.0, 20.5)).unwrap();
+        MotionWorld {
+            entities: &[],
+            player: &mut away,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        }
+        .controlled_simulation_tick(Default::default())
+        .unwrap();
+        assert_eq!(roses(&away), 0);
+    }
+
+    #[test]
     fn server_travel_moves_only_the_velocity() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -2853,6 +2957,98 @@ mod tests {
             assert!(w.player.ground.on_ground);
             assert_eq!(w.player.fluids.was_touching_water, wet);
             if wet {
+                assert_eq!(w.player.health.health(), 20.0);
+                assert_eq!(w.player.fall_distance, 0.0);
+            } else {
+                assert!(w.player.health.health() < 20.0);
+            }
+        }
+    }
+    /// A client's own fall (multiplayer, a LAN guest, single player on its
+    /// server thread) plays its landing but never hurts it: only the server
+    /// does (`Entity.hurt` on a client), so a server that cancels fall damage
+    /// leaves the screen still.
+    #[test]
+    fn a_clients_own_fall_does_not_hurt_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        for client_side in [false, true] {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 20.0, 20.5)).unwrap();
+            player.client_side = client_side;
+            player.fall_distance = 30.0;
+            let mut w = MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            };
+            w.move_self(Vec3::new(0.0, -30.0, 0.0)).unwrap();
+            assert!(w.player.ground.on_ground);
+            assert_eq!(w.player.fall_distance, 0.0);
+            // LivingEntity.causeFallDamage's sounds play on both sides.
+            assert!(w.player.events.iter().any(|e| matches!(
+                e,
+                MotionEvent::Fall(crate::landing::FallEvent::Sound {
+                    sound: crate::landing::SceneSound::BigFall,
+                    ..
+                })
+            )));
+            let hurt = w.player.health.health() < 20.0;
+            assert_eq!(hurt, !client_side);
+            assert_eq!(w.player.health.hurt_animation_time > 0, !client_side);
+            // The server's health then starts the client's hurt animation.
+            if client_side {
+                w.player.health.flash_health_change(20.0);
+                assert_eq!(w.player.health.hurt_animation_time, 0);
+                w.player.health.flash_health_change(12.0);
+                assert_eq!(w.player.health.hurt_animation_time, 10);
+            }
+        }
+    }
+    #[test]
+    fn slow_falling_clears_the_fall_distance_so_landing_does_not_hurt() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        for slow_falling in [false, true] {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 9.0, 20.5)).unwrap();
+            player.fall_distance = 30.0;
+            player.status.slow_falling = slow_falling;
+            let mut w = MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            };
+            for _ in 0..200 {
+                if w.player.ground.on_ground {
+                    break;
+                }
+                w.player_movement_tick([0.0, 0.0], false).unwrap();
+            }
+            assert!(w.player.ground.on_ground);
+            if slow_falling {
                 assert_eq!(w.player.health.health(), 20.0);
                 assert_eq!(w.player.fall_distance, 0.0);
             } else {
