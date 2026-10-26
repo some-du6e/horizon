@@ -69,7 +69,7 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || (steps.mode.outputs.dry_run == 'true' && github.sha) || '' }}
           FORCE: ${{ inputs.force && 'yes' || '' }}
         run: |
-          python3 tools/release_train.py decide --kind game ${HEAD_SHA:+--head "$HEAD_SHA"} ${FORCE:+--force} | tee decision.json
+          git fetch -q --tags https://github.com/ludovic111/horizon && GITHUB_REPOSITORY=ludovic111/horizon python3 tools/release_train.py decide --kind game ${HEAD_SHA:+--head "$HEAD_SHA"} ${FORCE:+--force} | tee decision.json
           echo "### $(jq -r '.reason' decision.json)" >> "$GITHUB_STEP_SUMMARY"
           # The version the programs are built with (docs/versioning.md): the tag without its v.
           tag=$(jq -r '.tag' decision.json)
