@@ -108,7 +108,26 @@ impl Game<'_> {
         self.tick_beacon(key, &mut b);
         self.world.block_entities.put(key, BlockEntity::Beacon(b));
     }
+    /// `ClientLevel.tickBlockEntities` for beacons: a server's client walks
+    /// the beam and counts the pyramid itself (the update tag carries only
+    /// the powers), so `BeaconRenderer` has sections to draw.
+    pub(super) fn client_tick_beacons(&mut self) {
+        let keys: Vec<_> = (&self.world.block_entities)
+            .into_iter()
+            .filter(|(k, e)| {
+                matches!(e, BlockEntity::Beacon(_))
+                    && self.border.contains(f64::from(k.0), f64::from(k.2))
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            self.tick_beacon_at(key);
+        }
+    }
     fn tick_beacon(&mut self, (x, y, z): (i32, i32, i32), b: &mut Beacon) {
+        // `isClientSide`: no powers, and the sounds come from the server
+        // (`playSound(null, ...)` plays nothing on a client's level).
+        let client = self.remote.is_some();
         let mut check = if b.last_check_y < y {
             b.checking.clear();
             b.last_check_y = y - 1;
@@ -153,7 +172,7 @@ impl Game<'_> {
             if !b.sections.is_empty() {
                 b.levels = self.beacon_base(x, y, z);
             }
-            if b.levels > 0 && !b.sections.is_empty() {
+            if b.levels > 0 && !b.sections.is_empty() && !client {
                 self.beacon_effects([x, y, z], b);
                 self.beacon_sound([x, y, z], "minecraft:block.beacon.ambient");
             }
@@ -162,6 +181,9 @@ impl Game<'_> {
             b.last_check_y = super::MIN_Y - 1;
             b.sections = std::mem::take(&mut b.checking);
             let (was, is) = (previous > 0, b.levels > 0);
+            if client {
+                return;
+            }
             if !was && is {
                 self.beacon_sound([x, y, z], "minecraft:block.beacon.activate");
             } else if was && !is {
