@@ -23,6 +23,7 @@ pub mod block_entity_nbt;
 pub mod block_entity_render;
 pub mod block_transform;
 pub mod blocks;
+pub mod bluemap;
 pub mod border_render;
 pub mod boss_overlay;
 pub mod bossbar;

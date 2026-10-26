@@ -1157,6 +1157,8 @@ struct Game<'a> {
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    /// The server's BlueMap far terrain draws from, when the player named one.
+    lod_blue_map: Option<Arc<horizon_client::bluemap::BlueMap>>,
     /// The detail revision, centre and radius `Lod::update` last had covered for.
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
     options: Options,
@@ -10638,6 +10640,7 @@ impl Game<'_> {
         self.lod = None;
         self.lod_source_attempted = false;
         self.lod_observe.clear();
+        self.lod_blue_map = None;
         self.lod_covered_at = None;
         if let Some(renderer) = &mut self.renderer {
             renderer.clear_lods();
@@ -10664,7 +10667,8 @@ impl Game<'_> {
             (None, Some(remote)) => std::env::current_dir().ok().map(|home| {
                 use horizon_client::server_terrain as terrain;
                 let address = &remote.session.address;
-                let dir = terrain::level_dir(&home.join("server-terrain"), address, &remote.level);
+                let root = home.join("server-terrain");
+                let dir = terrain::level_dir(&root, address, &remote.level);
                 // Bobby's chunks of the level are read as they're needed.
                 let bobby = terrain::bobby_root()
                     .and_then(|root| {
@@ -10679,7 +10683,31 @@ impl Game<'_> {
                             self.res.facts(),
                         )
                     });
-                terrain::ServerTerrain::new(dir, bobby) as _
+                // Past both, the server's BlueMap, if the player named it.
+                let blue_map = self
+                    .settings
+                    .horizon
+                    .blue_map
+                    .server(address)
+                    .map(|server| {
+                        use horizon_client::bluemap;
+                        log::info!("Horizon: far terrain also draws {}'s BlueMap", remote.level);
+                        let map = Arc::new(bluemap::BlueMap::new(
+                            &server.url,
+                            &remote.level,
+                            server.maps.clone(),
+                            root.join(terrain::server_folder(address)).join("BlueMap"),
+                            self.settings.horizon.blue_map.radius_blocks(),
+                            bluemap::Palette::from_game(
+                                self.pack.assets.registry,
+                                self.res.biomes(),
+                            ),
+                        ));
+                        map.start();
+                        map
+                    });
+                self.lod_blue_map = blue_map.clone();
+                terrain::ServerTerrain::new(dir, bobby, blue_map) as _
             }),
             (None, None) => Some(self.streaming.lod_source()),
         };
@@ -10699,6 +10727,12 @@ impl Game<'_> {
         if self.lod.is_some() {
             for &((x, _, z), _, _) in &self.world.light_edits {
                 self.lod_observe.insert((x >> 4, z >> 4));
+            }
+        }
+        if let (Some(map), Some(p), Some(lod)) = (&self.lod_blue_map, &self.player, &mut self.lod) {
+            map.set_center(p.position.x.floor() as i32, p.position.z.floor() as i32);
+            for area in map.take_changed() {
+                lod.refresh(area);
             }
         }
         if let Some(p) = &self.player {
@@ -11862,6 +11896,7 @@ impl<'a> Game<'a> {
             lod: None,
             lod_source_attempted: false,
             lod_observe: Default::default(),
+            lod_blue_map: None,
             lod_covered_at: None,
             options,
             player: None,
