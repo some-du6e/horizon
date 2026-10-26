@@ -3749,7 +3749,11 @@ impl Game<'_> {
                 });
                 self.process_level_events()?;
                 if result.consumes_action() {
-                    self.swing_arm();
+                    // Success.shouldSwing: CONSUME (a pressed button) ends
+                    // the click without a swing.
+                    if result == horizon_world::level::InteractionResult::Success {
+                        self.swing_arm();
+                    }
                     return Ok(true);
                 }
             }
