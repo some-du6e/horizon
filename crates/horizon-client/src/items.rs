@@ -139,6 +139,17 @@ pub struct ItemInfo {
     pub attack_animation: crate::first_person::SwingAnimation,
     /// `attack_range` as written (null when absent).
     pub attack_range: Value,
+    /// `kinetic_weapon` (spears): the timings of a charge's animation.
+    pub kinetic_weapon: Option<crate::spear_anim::KineticTimings>,
+    /// `kinetic_weapon.sound`: played as the charge starts.
+    pub kinetic_sound: Option<String>,
+}
+/// `SoundEvent.CODEC`: a registered id, or a direct `{sound_id, range}`.
+fn sound_event(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        other => other["sound_id"].as_str().map(str::to_owned),
+    }
 }
 /// The `piercing_weapon` component (`PiercingWeapon`).
 #[derive(Clone, Debug, PartialEq)]
@@ -150,16 +161,11 @@ pub struct PiercingWeapon {
 }
 impl PiercingWeapon {
     fn parse(v: &Value) -> Option<Self> {
-        // SoundEvent.CODEC: a registered id, or a direct `{sound_id, range}`.
-        let sound = |v: &Value| match v {
-            Value::String(s) => Some(s.clone()),
-            other => other["sound_id"].as_str().map(str::to_owned),
-        };
         v.is_object().then(|| Self {
             deals_knockback: v["deals_knockback"].as_bool().unwrap_or(true),
             dismounts: v["dismounts"].as_bool().unwrap_or(false),
-            sound: sound(&v["sound"]),
-            hit_sound: sound(&v["hit_sound"]),
+            sound: sound_event(&v["sound"]),
+            hit_sound: sound_event(&v["hit_sound"]),
         })
     }
 }
@@ -753,6 +759,10 @@ impl Items {
                         .unwrap_or(0.0) as f32,
                     attack_animation: swing_animation(&c["minecraft:attack_animation"]),
                     attack_range: c["minecraft:attack_range"].clone(),
+                    kinetic_weapon: crate::spear_anim::KineticTimings::parse(
+                        &c["minecraft:kinetic_weapon"],
+                    ),
+                    kinetic_sound: sound_event(&c["minecraft:kinetic_weapon"]["sound"]),
                 },
             );
             order.push(id);

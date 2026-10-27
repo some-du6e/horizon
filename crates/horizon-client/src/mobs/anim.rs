@@ -243,6 +243,8 @@ pub enum ArmPose {
     CrossbowCharge,
     /// Raising a trident to throw it (or to launch with Riptide).
     ThrowTrident,
+    /// Holding or charging a spear (`SpearAnimations.thirdPersonHandUse`).
+    Spear,
 }
 /// HumanoidModel.setupAnim with empty hands (endermen).
 pub fn humanoid_pub(p: &mut Poses, s: &State, _m: &Mob) {
@@ -286,6 +288,11 @@ pub struct Hum {
     pub using_item: bool,
     /// The arm the current swing moves (`Some(true)` for the right one).
     pub swing_right_arm: Option<bool>,
+    /// The current swing is a `STAB`.
+    pub stab: bool,
+    /// For the right and left arm: the spear it holds, and the ticks it has
+    /// been charging (0 when it is not).
+    pub spear: [(Option<crate::spear_anim::KineticTimings>, f32); 2],
 }
 impl Hum {
     pub fn new(right: ArmPose, left: ArmPose) -> Self {
@@ -303,6 +310,8 @@ impl Hum {
             swim: 0.0,
             using_item: false,
             swing_right_arm: None,
+            stab: false,
+            spear: [(None, 0.0); 2],
         }
     }
 }
@@ -378,6 +387,11 @@ fn pose_arm(p: &mut Poses, pose: ArmPose, right: bool, h: &Hum) {
         }
         ArmPose::CrossbowHold => crossbow_hold(p, hx, hy, right),
         ArmPose::CrossbowCharge => crossbow_charge(p, h.charge.0, h.charge.1, right),
+        ArmPose::Spear => {
+            let (kinetic, ticks) = h.spear[usize::from(!right)];
+            let lowered = h.fall_flying || h.swim > 0.0;
+            crate::spear_anim::third_person_hand_use(p, right, lowered, ticks, kinetic);
+        }
     }
 }
 /// `HumanoidModel.setupAnim` (and `ZombieModel.setupAttackAnimation`).
@@ -440,14 +454,19 @@ pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
         p.get("right_arm")[4] += body_y;
         p.get("left_arm")[4] += body_y;
         p.get("left_arm")[3] += body_y;
-        // Ease.outQuart
-        let eased = 1.0 - (1.0 - swing).powi(4);
-        let aa = (eased * PI).msin();
-        let bb = (swing * PI).msin() * -(hx - 0.7) * 0.75;
-        let r = p.get("right_arm");
-        r[3] -= aa * 1.2 + bb;
-        r[4] += body_y * 2.0;
-        r[5] += (swing * PI).msin() * -0.4;
+        if h.stab {
+            let right = h.swing_right_arm.unwrap_or(true);
+            crate::spear_anim::third_person_attack_hand(p, swing, right);
+        } else {
+            // Ease.outQuart
+            let eased = 1.0 - (1.0 - swing).powi(4);
+            let aa = (eased * PI).msin();
+            let bb = (swing * PI).msin() * -(hx - 0.7) * 0.75;
+            let r = p.get("right_arm");
+            r[3] -= aa * 1.2 + bb;
+            r[4] += body_y * 2.0;
+            r[5] += (swing * PI).msin() * -0.4;
+        }
     }
     if let Some(aggressive) = h.zombie {
         // AnimationUtils.animateZombieArms
@@ -514,12 +533,13 @@ fn swim(p: &mut Poses, pos: f32, h: &Hum) {
         );
     }
     let swim_pos = pos % 26.0;
-    let right_amount = if h.swing_right_arm == Some(true) {
+    // An arm holding a spear, or swinging, keeps its pose.
+    let right_amount = if h.swing_right_arm == Some(true) || h.right == ArmPose::Spear {
         0.0
     } else {
         amount
     };
-    let left_amount = if h.swing_right_arm == Some(false) {
+    let left_amount = if h.swing_right_arm == Some(false) || h.left == ArmPose::Spear {
         0.0
     } else {
         amount
@@ -672,8 +692,13 @@ pub fn setup(
                 ArmPose::Empty
             };
             let using_main = m.extra.using_item > 0 && !m.extra.using_off_hand;
+            let [main_spear, off_spear] = m.extra.kinetic;
             let pose = if player {
                 match m.extra.main_hand.as_deref() {
+                    // AvatarRenderer.getArmPose: a spear in hand, charging or
+                    // not (HumanoidMobRenderer.usesSpearPose), or a stab.
+                    Some(_) if main_spear.is_some() => ArmPose::Spear,
+                    _ if m.extra.swing_stab => ArmPose::Spear,
                     Some(_) if using_main && m.extra.blocking => ArmPose::Block,
                     Some("minecraft:bow") if using_main => ArmPose::Bow,
                     Some("minecraft:trident") if using_main => ArmPose::ThrowTrident,
@@ -690,7 +715,9 @@ pub fn setup(
                 right
             };
             let off = if player && m.extra.off_hand.is_some() && !pose.affects_offhand() {
-                if m.extra.using_item > 0 && m.extra.using_off_hand && m.extra.blocking {
+                if off_spear.is_some() {
+                    ArmPose::Spear
+                } else if m.extra.using_item > 0 && m.extra.using_off_hand && m.extra.blocking {
                     ArmPose::Block
                 } else {
                     ArmPose::Item
@@ -715,6 +742,20 @@ pub fn setup(
             h.swim = m.extra.swim.amount(s.partial);
             h.using_item = m.extra.using_item > 0;
             h.swing_right_arm = m.extra.swing_right_arm;
+            h.stab = m.extra.swing_stab;
+            // ticksUsingItem for the arm whose hand charges a spear.
+            let ticks = (m.extra.using_item as f32 - 1.0 + s.partial).max(0.0);
+            let (main_ticks, off_ticks) = match (m.extra.using_item > 0, m.extra.using_off_hand) {
+                (false, _) => (0.0, 0.0),
+                (true, false) => (ticks, 0.0),
+                (true, true) => (0.0, ticks),
+            };
+            let (main, off) = ((main_spear, main_ticks), (off_spear, off_ticks));
+            h.spear = if m.main_arm_left() {
+                [off, main]
+            } else {
+                [main, off]
+            };
             humanoid(p, s, &h);
             if m.ai.aggressive && !bow {
                 // SkeletonModel melee pose.

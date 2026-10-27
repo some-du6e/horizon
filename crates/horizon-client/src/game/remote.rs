@@ -2018,9 +2018,16 @@ impl Game<'_> {
                     .iter()
                     .map(|(slot, stack)| (*slot, stack.as_ref().map(|s| self.item_name(s.item))))
                     .collect();
+                let items_info = self.res.items();
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
                     for (slot, item) in items {
                         let e = &mut m.extra;
+                        if slot < 2 {
+                            e.kinetic[usize::from(slot)] = item
+                                .as_deref()
+                                .and_then(|i| items_info.get(i))
+                                .and_then(|i| i.kinetic_weapon);
+                        }
                         match slot {
                             0 => e.main_hand = item,
                             1 => e.off_hand = item,
@@ -2151,7 +2158,7 @@ impl Game<'_> {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
                     self.swing_hand(hand, animation);
                 } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
-                    m.swing();
+                    m.swing_with(animation);
                 }
             }
             // The player's own instances: its maximum health (the hearts the
@@ -4319,6 +4326,20 @@ impl Game<'_> {
         if self.using.is_some() {
             return;
         }
+        // Item.use for a kinetic weapon (spears): startUsingItem, and
+        // KineticWeapon.makeSound for this player (the server plays it for
+        // the others).
+        if let Some(info) = self.res.items().get(&held.item)
+            && info.kinetic_weapon.is_some()
+        {
+            let sound = info.kinetic_sound.clone();
+            self.using = Some((self.held_slot(), 0));
+            if let Some(sound) = sound {
+                let at = self.player.as_ref().map(|p| p.position.components());
+                self.audio.play(&sound, at, 1.0, 1.0);
+            }
+            return;
+        }
         let start = match &*held.item {
             // BowItem.use: with an arrow, or in creative.
             "minecraft:bow" => self.creative || self.projectile_slot("minecraft:bow").is_some(),
@@ -4352,6 +4373,11 @@ impl Game<'_> {
             &*stack.item,
             "minecraft:bow" | "minecraft:crossbow" | "minecraft:trident" | "minecraft:spyglass"
         ) || self.blocks_attacks(stack).is_some()
+            || self
+                .res
+                .items()
+                .get(&stack.item)
+                .is_some_and(|i| i.kinetic_weapon.is_some())
     }
 
     /// The rest of Minecraft.startUseItem once the main hand's target passed:

@@ -1292,7 +1292,23 @@ pub fn held_item_transform(
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
-    hand_base(m, &model, base, &poses, left)
+    let mut t = hand_base(m, &model, base, &poses, left)?;
+    // submitArmWithItem: a stab swing of this arm thrusts the item out, and
+    // a spear charging in this arm's hand moves with its use.
+    let main = left == m.main_arm_left();
+    let swing_left = m.extra.swing_right_arm.map_or(m.main_arm_left(), |r| !r);
+    if m.extra.swing_stab && swing_left == left {
+        let forward = m.extra.kinetic[0].map_or(0.0, |k| k.forward_movement);
+        t *= crate::spear_anim::third_person_attack_item(s.swing, forward);
+    }
+    if m.extra.using_item > 0
+        && m.extra.using_off_hand != main
+        && let Some(k) = m.extra.kinetic[usize::from(!main)]
+    {
+        let ticks = (m.extra.using_item as f32 - 1.0 + alpha).max(0.0);
+        t *= crate::spear_anim::third_person_use_item(left, s.swing, ticks, k);
+    }
+    Some(t)
 }
 
 #[cfg(test)]

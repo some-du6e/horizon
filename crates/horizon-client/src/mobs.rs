@@ -710,6 +710,10 @@ pub struct Extra {
     /// The arm the current swing moves (`currentSwing.hand().asArm`): `Some(true)`
     /// for the right arm.
     pub swing_right_arm: Option<bool>,
+    /// The current swing is a `STAB` (spears' jab).
+    pub swing_stab: bool,
+    /// The `kinetic_weapon` timings of the main and off hand's items (spears).
+    pub kinetic: [Option<crate::spear_anim::KineticTimings>; 2],
     pub flag: bool,
     pub flag2: bool,
     /// Species scratch values (the wither's head targets and clocks).
