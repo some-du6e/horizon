@@ -4498,6 +4498,14 @@ impl Game<'_> {
         if self.spectator() {
             return true;
         }
+        if self.cannot_attack_with_held(self.hand_strength.ticker, 0) {
+            return false;
+        }
+        // A spear jabs at whatever is along its reach (game/spear.rs).
+        if let Some(weapon) = self.held_piercing_weapon() {
+            self.remote_piercing_attack(&weapon);
+            return true;
+        }
         let mut instant = false;
         // A ghast's fireball or a wind charge nearer than any mob: the
         // server turns it (game/deflect.rs).
@@ -4548,7 +4556,10 @@ impl Game<'_> {
         if !down {
             self.clicks.miss_time = 0;
         }
-        if self.clicks.miss_time > 0 || self.using.is_some() {
+        if self.clicks.miss_time > 0
+            || self.using.is_some()
+            || self.held_piercing_weapon().is_some()
+        {
             return;
         }
         let entity = self.entity_targeted();

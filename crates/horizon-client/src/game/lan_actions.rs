@@ -1027,6 +1027,8 @@ impl Game<'_> {
                         g.player_on_equip("mainhand", offhand.as_ref(), main.as_ref());
                     });
                 }
+                // STAB: a jab with the main hand's piercing weapon (game/spear.rs).
+                8 if !spectator => self.guest_stab(host, conn),
                 _ => {}
             },
             S::SetCarriedItem(p) => {
@@ -1513,6 +1515,15 @@ impl Game<'_> {
             return;
         };
         if host.hub.guests[gi].spectator() {
+            return;
+        }
+        // A piercing weapon attacks by STAB only (handleAttack ignores it).
+        let g = &host.hub.guests[gi];
+        if g.inventory[g.selected]
+            .as_ref()
+            .and_then(|s| self.res.items().get(&s.item))
+            .is_some_and(|i| i.piercing_weapon.is_some())
+        {
             return;
         }
         if let Some(victim) = Self::pvp_victim(host, conn, id) {

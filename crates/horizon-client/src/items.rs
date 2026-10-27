@@ -131,6 +131,53 @@ pub struct ItemInfo {
     pub block_transformer: Option<String>,
     /// Has a default `bundle_contents` (the bundles, `BundleItem`).
     pub bundle: bool,
+    /// `piercing_weapon` (spears): a jab instead of a melee attack.
+    pub piercing_weapon: Option<PiercingWeapon>,
+    /// `minimum_attack_charge`: the attack strength an attack needs (0: none).
+    pub minimum_attack_charge: f32,
+    /// `attack_animation` (`SwingAnimation.DEFAULT` when absent).
+    pub attack_animation: crate::first_person::SwingAnimation,
+    /// `attack_range` as written (null when absent).
+    pub attack_range: Value,
+}
+/// The `piercing_weapon` component (`PiercingWeapon`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PiercingWeapon {
+    pub deals_knockback: bool,
+    pub dismounts: bool,
+    pub sound: Option<String>,
+    pub hit_sound: Option<String>,
+}
+impl PiercingWeapon {
+    fn parse(v: &Value) -> Option<Self> {
+        // SoundEvent.CODEC: a registered id, or a direct `{sound_id, range}`.
+        let sound = |v: &Value| match v {
+            Value::String(s) => Some(s.clone()),
+            other => other["sound_id"].as_str().map(str::to_owned),
+        };
+        v.is_object().then(|| Self {
+            deals_knockback: v["deals_knockback"].as_bool().unwrap_or(true),
+            dismounts: v["dismounts"].as_bool().unwrap_or(false),
+            sound: sound(&v["sound"]),
+            hit_sound: sound(&v["hit_sound"]),
+        })
+    }
+}
+/// `SwingAnimation.CODEC`: `type` (none, whack, stab) and `duration`, each
+/// defaulting to `SwingAnimation.DEFAULT`'s.
+fn swing_animation(v: &Value) -> crate::first_person::SwingAnimation {
+    let default = crate::first_person::SwingAnimation::DEFAULT;
+    crate::first_person::SwingAnimation {
+        kind: match v["type"].as_str() {
+            Some("none") => 0,
+            Some("stab") => 2,
+            Some("whack") => 1,
+            _ => default.kind,
+        },
+        duration: v["duration"]
+            .as_i64()
+            .map_or(default.duration, |d| d as i32),
+    }
 }
 /// `Item.Properties.craftRemainder` (not a data component, so not in the
 /// default-component report): what an item leaves in the grid when crafted with.
@@ -700,6 +747,12 @@ impl Items {
                         .map(str::to_owned),
                     attack_damage: modifier("minecraft:attack_damage"),
                     attack_speed: modifier("minecraft:attack_speed"),
+                    piercing_weapon: PiercingWeapon::parse(&c["minecraft:piercing_weapon"]),
+                    minimum_attack_charge: c["minecraft:minimum_attack_charge"]
+                        .as_f64()
+                        .unwrap_or(0.0) as f32,
+                    attack_animation: swing_animation(&c["minecraft:attack_animation"]),
+                    attack_range: c["minecraft:attack_range"].clone(),
                 },
             );
             order.push(id);
@@ -1727,6 +1780,29 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    #[test]
+    fn spear_components_parse() {
+        // A spear's components as the item report writes them.
+        let weapon = PiercingWeapon::parse(&json!({
+            "sound": "minecraft:item.spear.attack",
+            "hit_sound": {"sound_id": "minecraft:item.spear.hit"}
+        }))
+        .unwrap();
+        assert!(weapon.deals_knockback && !weapon.dismounts);
+        assert_eq!(weapon.sound.as_deref(), Some("minecraft:item.spear.attack"));
+        assert_eq!(
+            weapon.hit_sound.as_deref(),
+            Some("minecraft:item.spear.hit")
+        );
+        assert_eq!(PiercingWeapon::parse(&Value::Null), None);
+        let stab = swing_animation(&json!({"type": "stab", "duration": 19}));
+        assert_eq!((stab.kind, stab.duration), (2, 19));
+        assert_eq!(
+            swing_animation(&Value::Null),
+            crate::first_person::SwingAnimation::DEFAULT
+        );
+    }
 
     fn ctx<'a>(
         items: &'a Items,
