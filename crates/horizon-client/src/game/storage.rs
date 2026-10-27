@@ -2,7 +2,7 @@
 //! kept in the dropped item's `container` component) and ender chests (the
 //! player's `PlayerEnderChestContainer`, saved as `EnderItems`).
 use super::Game;
-use horizon_client::{containers::BlockEntity, items::ItemStack};
+use horizon_client::{containers::BlockEntity, items::ItemStack, text::Text};
 
 pub(super) fn is_shulker_box(name: &str) -> bool {
     name.ends_with("shulker_box")
@@ -32,6 +32,55 @@ impl Game<'_> {
             .insert(key, BlockEntity::Chest(self.ender_items.clone()));
         self.container = Some(key);
         self.ender_open = Some(key);
+    }
+    /// The block above `key` is a redstone conductor.
+    fn conductor_above(&self, key: (i32, i32, i32)) -> bool {
+        let above = self.world.block(key.0, key.1 + 1, key.2);
+        self.res.behaviours().facts(above).flags
+            & horizon_world::level::data::state_flags::CONDUCTOR
+            != 0
+    }
+    /// `ChestBlock.isChestBlockedAt`: a redstone conductor above the chest or
+    /// a cat sitting on it.
+    fn chest_blocked_at(&self, key: (i32, i32, i32)) -> bool {
+        if self.conductor_above(key) {
+            return true;
+        }
+        // isCatSittingOnChest: a cat whose box meets the block above.
+        let area = horizon_core::geometry::Aabb::new(
+            horizon_core::geometry::Vec3::new(
+                f64::from(key.0),
+                f64::from(key.1 + 1),
+                f64::from(key.2),
+            ),
+            horizon_core::geometry::Vec3::new(
+                f64::from(key.0 + 1),
+                f64::from(key.1 + 2),
+                f64::from(key.2 + 1),
+            ),
+        );
+        self.mobs.iter().any(|m| {
+            m.species() == horizon_client::mobs::Species::Cat
+                && m.alive()
+                && horizon_client::mobs::tame::cat_sitting(m)
+                && m.bounds().intersects(area)
+        })
+    }
+    /// `ChestBlock.getMenuProvider` (`combine(.., false)`) and
+    /// `EnderChestBlock.useWithoutItem`: a blocked chest, or a double chest
+    /// with either half blocked, opens no menu.
+    pub(super) fn chest_menu_blocked(&self, key: (i32, i32, i32), name: &str) -> bool {
+        match name {
+            "minecraft:chest" | "minecraft:trapped_chest" => {
+                self.chest_blocked_at(key)
+                    || self
+                        .chest_partner(key)
+                        .is_some_and(|(other, _)| self.chest_blocked_at(other))
+            }
+            // The ender chest only looks at the block above (no cat check).
+            "minecraft:ender_chest" => self.conductor_above(key),
+            _ => false,
+        }
     }
     /// Closing it copies the items back and leaves no block-entity contents.
     pub(super) fn close_ender_chest(&mut self) {
@@ -233,7 +282,7 @@ impl Game<'_> {
         generic.then(|| self.container_size() / 9)
     }
     /// The title of the open chest-like menu.
-    fn chest_title(&self, rows: usize) -> String {
+    fn chest_title(&self, rows: usize) -> Text {
         if let Some((_, title)) = self.remote_chest_menu() {
             return title;
         }
@@ -246,7 +295,7 @@ impl Game<'_> {
             _ if rows > 3 => ("container.chestDouble", "Large Chest"),
             _ => ("container.chest", "Chest"),
         };
-        self.container_title(self.translate(key, fallback))
+        Text::literal(self.container_title(self.translate(key, fallback))).resolve_legacy()
     }
     /// `ContainerScreen` / `ShulkerBoxScreen`: the background with its
     /// container rows, the title and the inventory label.
@@ -294,7 +343,7 @@ impl Game<'_> {
             r.u1 = r.u0 + 176.0 * du;
             batch.rect_uv(ox, oy + top, 176.0, 96.0, r, u32::MAX);
         }
-        batch.text(
+        batch.text_styled(
             atlas,
             &self.chest_title(rows),
             ox + 8.0,

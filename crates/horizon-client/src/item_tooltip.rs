@@ -56,10 +56,9 @@ impl<'a> TooltipDisplay<'a> {
         else {
             return true;
         };
-        let component = horizon_world::nbt::JavaString::from(component);
-        !hidden
-            .iter()
-            .any(|tag| matches!(tag, Tag::String(id) if id == &component))
+        !hidden.iter().any(|tag| {
+            matches!(tag, Tag::String(id) if id.0.iter().copied().eq(component.encode_utf16()))
+        })
     }
 }
 
@@ -188,6 +187,9 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
     let path = stack.item.trim_start_matches("minecraft:");
     if let Some(name) = stack.custom_name() {
         return name.to_owned();
+    }
+    if let Some(name) = stack.item_name() {
+        return name;
     }
     if stack.data().is_some_and(|d| d.ominous_banner) {
         return translate("block.minecraft.ominous_banner")
@@ -487,23 +489,31 @@ pub fn lines(
 ) -> Vec<String> {
     let mut lines = vec![name_line(stack, translate)];
     if TooltipDisplay::for_stack(stack).shows("minecraft:lore") {
-        lines.extend(lore_lines(stack));
+        lines.extend(lore_texts(stack).into_iter().map(|t| t.plain()));
     }
     lines.extend(detail_lines(stack, info, translate));
     lines
 }
 
-/// `LoreComponent.addToTooltip`: the saved component lines, as plain text.
-fn lore_lines(stack: &ItemStack) -> Vec<String> {
+/// `ItemLore.addToTooltip`: each lore component under dark purple italic, with
+/// the component's own styles (including explicit `false`) winning on children.
+pub fn lore_texts(stack: &ItemStack) -> Vec<crate::text::Text> {
     let Some(Tag::List(entries)) = stack.data().and_then(|d| d.other("minecraft:lore")) else {
         return Vec::new();
+    };
+    let base = crate::text::Style {
+        color: Some(crate::text::DARK_PURPLE),
+        italic: Some(true),
+        ..Default::default()
     };
     entries
         .iter()
         .map(|entry| {
-            let json = crate::scoreboard::tag_to_json(entry);
-            let text = crate::component::to_text(&json, &mut |s| crate::text::Text::literal(s));
-            text.plain()
+            let mut text = crate::entity_nbt::name_text(entry).resolve_legacy();
+            for span in &mut text.spans {
+                span.style.inherit(&base);
+            }
+            text
         })
         .collect()
 }
@@ -511,6 +521,42 @@ fn lore_lines(stack: &ItemStack) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lore_keeps_component_colours_under_dark_purple_italic() {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        stack.data_mut().set_other(
+            "minecraft:lore",
+            Some(Tag::List(vec![
+                Tag::compound([
+                    ("text", Tag::String("Gold line".into())),
+                    ("color", Tag::String("gold".into())),
+                    ("italic", Tag::Byte(0)),
+                ]),
+                Tag::String("Plain lore".into()),
+            ])),
+        );
+        let lines = lore_texts(&stack);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].plain(), "Gold line");
+        assert_eq!(lines[0].spans[0].style.color, Some(crate::text::GOLD));
+        assert!(!lines[0].spans[0].style.is_italic());
+        assert_eq!(lines[1].plain(), "Plain lore");
+        assert_eq!(
+            lines[1].spans[0].style.color,
+            Some(crate::text::DARK_PURPLE)
+        );
+        assert!(lines[1].spans[0].style.is_italic());
+        assert!(TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
+        stack.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([(
+                "hidden_components",
+                Tag::List(vec![Tag::String("minecraft:lore".into())]),
+            )])),
+        );
+        assert!(!TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
+    }
 
     #[test]
     fn tooltip_display_controls_name_and_component_visibility() {
@@ -568,6 +614,14 @@ mod tests {
         assert_eq!(rarity(&banner, "common"), "uncommon");
         banner.data_mut().custom_name = Some("Captain's Standard".into());
         assert_eq!(name_line(&banner, &translate), "Captain's Standard");
+        let mut custom_item = ItemStack::new("minecraft:diamond_sword", 1);
+        custom_item.data_mut().other.push((
+            "minecraft:item_name".into(),
+            Tag::String("Excalibur".into()),
+        ));
+        assert_eq!(name_line(&custom_item, &translate), "Excalibur");
+        custom_item.data_mut().custom_name = Some("Custom Blade".into());
+        assert_eq!(name_line(&custom_item, &translate), "Custom Blade");
         banner.enchant("minecraft:unbreaking", 1);
         assert_eq!(rarity(&banner, "common"), "rare");
         let plain = ItemStack::new("minecraft:white_banner", 1);

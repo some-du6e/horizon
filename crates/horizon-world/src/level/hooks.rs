@@ -447,6 +447,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if !b.table.bool(state, b.props.powered) {
                 self.detector_rail_check_pressed(pos, state);
             }
+        } else if data.is(Class::Button) {
+            // ButtonBlock.entityInside: a wooden button an arrow is inside.
+            if data.set_type.as_ref().is_some_and(|s| s.arrows)
+                && !b.table.bool(state, b.props.powered)
+            {
+                self.button_check_pressed(pos, state);
+            }
         } else if data.is(Class::TripWire)
             && !b.table.bool(state, b.props.powered)
             && !self.ticks.has_block_tick(pos, b.block(state))
@@ -572,6 +579,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.neighbor_changed_at(pos, b.named.water);
             self.game_event_state(pos, "minecraft:block_destroy", state);
         }
+    }
+    /// `BigDripleafBlock.entityInside` on a server level: an entity standing on
+    /// a flat leaf (`canEntityTilt`: on the ground, its feet above the leaf's
+    /// lowest top, 11/16, less 4/16: 0.6875) tilts it UNSTABLE unless the leaf
+    /// is powered; `setTiltAndScheduleTick` with no sound (UNSTABLE causes no
+    /// vibration) and the next state in 10 ticks.
+    pub(crate) fn big_dripleaf_entity_inside(
+        &mut self,
+        pos: BlockPos,
+        on_ground: bool,
+        feet_y: f64,
+    ) {
+        let b = self.b;
+        let state = self.state(pos);
+        if !b.data(state).is(Class::BigDripleaf)
+            || b.table.text(state, b.props.tilt) != "none"
+            || !(on_ground && feet_y > f64::from(pos.y) + f64::from(0.6875_f32))
+            || self.has_neighbor_signal(pos)
+        {
+            return;
+        }
+        self.set_block(pos, b.table.set_text(state, b.props.tilt, "unstable"), 2);
+        self.schedule_tick(pos, b.block(state), 10);
     }
     /// `BigDripleafBlock.resetTilt`.
     pub(crate) fn big_dripleaf_reset_tilt(&mut self, pos: BlockPos, state: BlockStateId) {

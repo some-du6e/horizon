@@ -16,7 +16,7 @@ Horizon is Minecraft: Java Edition 26.3 rewritten from scratch in Rust, so it ru
 - **Single player as a server: the last differences**: Single player now runs a small server in the background, as vanilla does. We are fixing what still behaves differently there; every fix also works for LAN and server players.
 - **Horizon's mod registry**: One place for mods, modpacks and resource packs made for Horizon: browse them on the website and install them from the launcher in one click.
 
-**Next**: Microsoft sign-in (coming soon); CurseForge in the mod browser (coming soon); Fresh benchmarks against vanilla; Pistons push players and mobs; Horizon on Intel Macs; Faster world creation and entry on small CPUs; Servers that hold 20 TPS with 50 to 100 players; Low-end computers: Steam Deck, old Macs, 8 GB; Native upscaling; A batch of targeted optimisations; A Convert to Rust button for what isn't rewritten yet; Mods with code: machines, magic, mobs; Data packs in the mod browser; Prepare a version without Java; Server console, bans and a full admin API; Hosting polish: Windows service, safe updates; Guided hosting with Tailscale and an invite button; An official Docker image for servers; One single-player path: remove the in-frame world; Villages and combat, exactly as in vanilla; Choose the audio output device; Mods that read and change the world; Machines and blocks with inventories (API 0.4); Lua and other languages for mods; Well-known shader looks, rewritten for Horizon; A visible beta label; Wayland and Hyprland polish; A versioned agent-control protocol; Port mods with your own AI agent; Horizon on X (coming soon); Pipeline protection and a GitHub App for agents; Signed updates everywhere, installers included.
+**Next**: Microsoft sign-in (coming soon); CurseForge in the mod browser (coming soon); Fresh benchmarks against vanilla; Pistons push players and mobs; Horizon on Intel Macs; Faster world creation and entry on small CPUs; Servers that hold 20 TPS with 50 to 100 players; Low-end computers: Steam Deck, old Macs, 8 GB; Native upscaling; A batch of targeted optimisations; A Convert to Rust button for what isn't rewritten yet; Mods with code: machines, magic, mobs; Data packs in the mod browser; Prepare a version without Java; Server console, bans and a full admin API; Hosting polish: Windows service, safe updates; Guided hosting with Tailscale and an invite button; An official Docker image for servers; One single-player path: remove the in-frame world; Villages and combat, exactly as in vanilla; Choose the audio output device; Mods that read and change the world; Machines and blocks with inventories (API 0.4); Lua and other languages for mods; Well-known shader looks, rewritten for Horizon; A visible beta label; Wayland and Hyprland polish; A versioned agent-control protocol; Port mods with your own AI agent; Horizon on X (coming soon); Pipeline protection and a GitHub App for agents; Signed updates everywhere, installers included; A server you install with one command.
 
 **How to help**: Play it and tell us what differs from vanilla (Discord or GitHub), run the benchmark on your computer, vote for what you want next, or pick one of the Help wanted items.
 
@@ -134,7 +134,7 @@ Better tools for mod makers: a test runner that needs no game window, templates 
 
 `cargo horizon-mod test` runs a mod's test scripts against a fake game snapshot ([#1816](https://github.com/ludovic111/horizon/issues/1816)) and, for server mods, scripted server events ([#1837](https://github.com/ludovic111/horizon/issues/1837)); the content template and the guides are merged ([#1859](https://github.com/ludovic111/horizon/issues/1859), [#1810](https://github.com/ludovic111/horizon/issues/1810), [docs/api/stability.md](docs/api/stability.md)). Left: templates for hud, server and machine mods, typed wrappers in the SDK, a frozen 0.1 compatibility mod that every runtime must load, a CI check that fails when a stable reference entry is removed without a new major version, and the SDK on crates.io once the API is stable.
 
-More: [website/docs/test-a-mod.md](website/docs/test-a-mod.md)
+More: [https://playhorizon.dev/docs/test-a-mod](https://playhorizon.dev/docs/test-a-mod)
 
 </details>
 
@@ -157,6 +157,66 @@ Item names, container titles and server messages follow the language you pick, a
 <details><summary>Technical</summary>
 
 Translatable components resolved through the selected language for items, containers and server text ([#1806](https://github.com/ludovic111/horizon/issues/1806)), on top of the bundled languages the prepared resources carry ([#1594](https://github.com/ludovic111/horizon/issues/1594)). Left: the client's own screens ([#1672](https://github.com/ludovic111/horizon/issues/1672)) and the main menu with zh_cn ([#1774](https://github.com/ludovic111/horizon/issues/1774)).
+
+</details>
+
+#### Cooldowns drawn on items
+
+After you throw an ender pearl, its slot should show the cooldown sweeping away, as in vanilla.
+
+<details><summary>Technical</summary>
+
+Vanilla draws `ItemCooldowns`' percent as a white overlay over the slot (`GuiGraphicsExtractor.itemDecorations` and `itemCooldown`) in the hotbar and in inventories. Issue [#1763](https://github.com/ludovic111/horizon/issues/1763).
+
+More: [#1933](https://github.com/ludovic111/horizon/issues/1933)
+
+</details>
+
+#### Chat settings and team prefixes
+
+The Hidden and Commands Only chat settings should hide chat, and team prefixes should appear before names in chat.
+
+<details><summary>Technical</summary>
+
+Vanilla checks `ChatVisiblity` before it delivers chat and system messages ([#1376](https://github.com/ludovic111/horizon/issues/1376)), and chat uses the team-formatted display name ([#1378](https://github.com/ludovic111/horizon/issues/1378)). Both issues have exact steps to reproduce.
+
+More: [#1932](https://github.com/ludovic111/horizon/issues/1932) · [#1841](https://github.com/ludovic111/horizon/issues/1841)
+
+</details>
+
+#### A pointing hand over buttons
+
+The mouse pointer should turn into a pointing hand over menu buttons, as in vanilla 26.3.
+
+<details><summary>Technical</summary>
+
+26.3's `AbstractWidget` asks for a cursor from `CursorTypes` when it is hovered; winit's `CursorIcon::Pointer` gives the same shape. Issue [#1347](https://github.com/ludovic111/horizon/issues/1347).
+
+More: [#1897](https://github.com/ludovic111/horizon/issues/1897)
+
+</details>
+
+#### Ctrl+Backspace and scroll bars in menus
+
+Ctrl+Backspace should delete a whole word in the creative search, and every list's scroll bar should be draggable.
+
+<details><summary>Technical</summary>
+
+`EditBox` deletes by word with Ctrl ([#1764](https://github.com/ludovic111/horizon/issues/1764)); the Game Rules and Statistics lists' scroll bars can't be dragged ([#1782](https://github.com/ludovic111/horizon/issues/1782), after [#978](https://github.com/ludovic111/horizon/issues/978)).
+
+More: [#1884](https://github.com/ludovic111/horizon/issues/1884) · [#1931](https://github.com/ludovic111/horizon/issues/1931)
+
+</details>
+
+#### Chickens flap while they fall
+
+Chickens should flap their wings while they fall, not stand still in the air.
+
+<details><summary>Technical</summary>
+
+Vanilla's `Chicken.aiStep` updates `flap` and `flapSpeed` when the chicken isn't on the ground, and the model's wings follow them. Issue [#1706](https://github.com/ludovic111/horizon/issues/1706).
+
+More: [#1892](https://github.com/ludovic111/horizon/issues/1892)
 
 </details>
 
@@ -250,7 +310,7 @@ Horizon should run well on small machines: integrated graphics, the Steam Deck, 
 
 Partly done: an opt-in 60 FPS cap with fewer workers on battery, Far Detail Reduced for integrated GPUs and animated textures on the GPU (both shipped). Left: measured targets and fixes per class of machine (memory use, worker counts, startup) on a Steam Deck, old Intel and Apple Silicon Macs and 8 GB computers, reported on the Benchmarks page.
 
-More: [docs/benchmark.md](docs/benchmark.md) · [website/docs/performance.md](website/docs/performance.md)
+More: [docs/benchmark.md](docs/benchmark.md) · [https://playhorizon.dev/docs/performance](https://playhorizon.dev/docs/performance)
 
 </details>
 
@@ -371,6 +431,16 @@ An official image to run a Horizon dedicated server in Docker with one command, 
 The repository has the Dockerfile (`packaging/server/Dockerfile`: a multi-stage build on Debian bookworm-slim, user `horizon`, volume `/data`, port 25565, game files mounted read-only, `HORIZON_EULA` and friends answering the first-start questions), and anyone can build it ([docs/hosting.md](docs/hosting.md), section 9). Left: publish the image to a public registry from the release workflow, tagged per release, so it follows the same checks, and update the docs and the launcher. The image never holds Mojang's files.
 
 More: [docs/server.md](docs/server.md)
+
+</details>
+
+#### A server you install with one command
+
+Install and run a Horizon dedicated server from a terminal with a single command, no launcher needed, for VPSes and headless machines.
+
+<details><summary>Technical</summary>
+
+A player's idea (#horizon-ideas). `horizon-server` already runs headless; left: an install script (Linux/macOS shell, Windows PowerShell) that fetches the signed release, checks it, asks for or points at the player's own game files and starts the server, documented in [docs/hosting.md](docs/hosting.md).
 
 </details>
 
@@ -530,7 +600,9 @@ You can port a mod to Horizon with your own AI agent on your own computer. Horiz
 
 <details><summary>Technical</summary>
 
-A player runs their own agent locally with `horizon-ctl` and the MCP servers ([docs/agent-control.md](docs/agent-control.md)), `cargo horizon-mod`, `horizon-port-pack` and the parity harnesses as the check. Horizon writes the guide ([website/docs/agents.md](website/docs/agents.md), [docs/modpacks.md](docs/modpacks.md)) and runs no agents, accounts or keys for players. The No AI switch turns all of it off.
+A player runs their own agent locally with `horizon-ctl` and the MCP servers ([docs/agent-control.md](docs/agent-control.md)), `cargo horizon-mod`, `horizon-port-pack` and the parity harnesses as the check. Horizon writes the guide (playhorizon.dev/docs/agents, [docs/modpacks.md](docs/modpacks.md)) and runs no agents, accounts or keys for players. The No AI switch turns all of it off.
+
+More: [https://playhorizon.dev/docs/agents](https://playhorizon.dev/docs/agents)
 
 </details>
 
@@ -790,18 +862,6 @@ Issue [#1709](https://github.com/ludovic111/horizon/issues/1709): aarch64 builds
 
 </details>
 
-#### OpenGL for old computers
-
-A way to play on old PCs and Linux machines that have no Vulkan or DirectX 12, through OpenGL.
-
-<details><summary>Technical</summary>
-
-Players on older hardware ask whether Vulkan is the only way. Horizon draws with wgpu, which has an OpenGL backend; what is needed is to see which features hold up on it, how fast it runs, and a launcher switch like the DirectX 12 fallback that already ships.
-
-More: [docs/graphics.md](docs/graphics.md)
-
-</details>
-
 #### Android, iOS and the browser
 
 Versions of Horizon for Android, iOS and web browsers. Nothing official yet; contributors have started the first pieces.
@@ -809,6 +869,16 @@ Versions of Horizon for Android, iOS and web browsers. Nothing official yet; con
 <details><summary>Technical</summary>
 
 No official build. Android was first closed as not planned, with touch controls, a mobile interface, packaging and loading the player's own assets all missing; the roadmap now includes it, iOS and a WebAssembly build for the browser as long-term goals. First pieces from contributors: `horizon-dualsense` compiling on iOS ([#1813](https://github.com/ludovic111/horizon/issues/1813)) and helper-thread limits on Android ([#1751](https://github.com/ludovic111/horizon/issues/1751)). Preparing without Java ([#1750](https://github.com/ludovic111/horizon/issues/1750)) matters here too. Horizon ships none of Mojang's files on any platform.
+
+</details>
+
+#### AppImage and a Nix flake
+
+Install Horizon on any Linux distribution as an AppImage, and on NixOS through a Nix flake.
+
+<details><summary>Technical</summary>
+
+A player's idea (#horizon-ideas). An AppImage of the launcher and game from the release workflow, and a flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA), the way horizon-parity's NixOS setup runs them today.
 
 </details>
 
@@ -821,6 +891,16 @@ Record, replay and edit videos without leaving the game: record in a keypress, r
 <details><summary>Technical</summary>
 
 Three stages. Recording: capture gameplay in a keypress with an encoder thread and little frame-time cost. Replay: a replay mode for recorded sessions. Editing: cuts, camera paths, titles and export. None of it exists yet; the agent-control socket ([docs/agent-control.md](docs/agent-control.md)) already lets tools drive the game for scripted shots.
+
+</details>
+
+#### Game menus in the launcher's style
+
+An optional look for the game's own menus and options that matches the Horizon launcher. Off by default: the vanilla menus stay as they are.
+
+<details><summary>Technical</summary>
+
+A player's idea (#horizon-ideas). A built-in resource pack or a Horizon setting that restyles the title, pause and options screens with the launcher's design tokens (crates/horizon-theme), following [docs/design-system.md](docs/design-system.md); off by default because it changes the vanilla look.
 
 </details>
 
@@ -858,7 +938,9 @@ Run Horizon's built-in benchmark and share the report: every new computer makes 
 
 <details><summary>Technical</summary>
 
-`horizon-launcher play --arg=--benchmark --arg=standard` writes a JSON report; `horizon-launcher data benchmark <report>` shows what would be sent and uploads it ([website/docs/performance.md](website/docs/performance.md)). Results from three installs with the same hardware appear on the Benchmarks page. Example: [#1711](https://github.com/ludovic111/horizon/issues/1711).
+`horizon-launcher play --arg=--benchmark --arg=standard` writes a JSON report; `horizon-launcher data benchmark <report>` shows what would be sent and uploads it (playhorizon.dev/docs/performance). Results from three installs with the same hardware appear on the Benchmarks page. Example: [#1711](https://github.com/ludovic111/horizon/issues/1711).
+
+More: [https://playhorizon.dev/docs/performance](https://playhorizon.dev/docs/performance)
 
 </details>
 
@@ -884,58 +966,9 @@ Armour and tools in End city chests should come enchanted, as in vanilla.
 
 </details>
 
-#### Cooldowns drawn on items
-
-After you throw an ender pearl, its slot should show the cooldown sweeping away, as in vanilla.
-
-<details><summary>Technical</summary>
-
-Vanilla draws `ItemCooldowns`' percent as a white overlay over the slot (`GuiGraphicsExtractor.itemDecorations` and `itemCooldown`) in the hotbar and in inventories. Issue [#1763](https://github.com/ludovic111/horizon/issues/1763).
-
-</details>
-
-#### Chat settings and team prefixes
-
-The Hidden and Commands Only chat settings should hide chat, and team prefixes should appear before names in chat.
-
-<details><summary>Technical</summary>
-
-Vanilla checks `ChatVisiblity` before it delivers chat and system messages ([#1376](https://github.com/ludovic111/horizon/issues/1376)), and chat uses the team-formatted display name ([#1378](https://github.com/ludovic111/horizon/issues/1378)). Both issues have exact steps to reproduce.
-
-</details>
-
-#### A pointing hand over buttons
-
-The mouse pointer should turn into a pointing hand over menu buttons, as in vanilla 26.3.
-
-<details><summary>Technical</summary>
-
-26.3's `AbstractWidget` asks for a cursor from `CursorTypes` when it is hovered; winit's `CursorIcon::Pointer` gives the same shape. Issue [#1347](https://github.com/ludovic111/horizon/issues/1347).
-
-</details>
-
-#### Ctrl+Backspace and scroll bars in menus
-
-Ctrl+Backspace should delete a whole word in the creative search, and every list's scroll bar should be draggable.
-
-<details><summary>Technical</summary>
-
-`EditBox` deletes by word with Ctrl ([#1764](https://github.com/ludovic111/horizon/issues/1764)); the Game Rules and Statistics lists' scroll bars can't be dragged ([#1782](https://github.com/ludovic111/horizon/issues/1782), after [#978](https://github.com/ludovic111/horizon/issues/978)).
-
-</details>
-
-#### Chickens flap while they fall
-
-Chickens should flap their wings while they fall, not stand still in the air.
-
-<details><summary>Technical</summary>
-
-Vanilla's `Chicken.aiStep` updates `flap` and `flapSpeed` when the chicken isn't on the ground, and the model's wings follow them. Issue [#1706](https://github.com/ludovic111/horizon/issues/1706).
-
-</details>
-
 ## Recently shipped
 
+- **OpenGL for old computers** (v0.2.63): Horizon now starts on old PCs whose graphics card has no Vulkan or DirectX 12 driver: it switches to OpenGL by itself, and Options > Graphics can pick OpenGL by hand. [#1917](https://github.com/ludovic111/horizon/issues/1917) · [#1920](https://github.com/ludovic111/horizon/issues/1920) · [#1936](https://github.com/ludovic111/horizon/issues/1936)
 - **Server resource packs** (v0.2.48): Servers can send you their resource pack: Horizon asks, downloads it and applies it, like vanilla. [#1562](https://github.com/ludovic111/horizon/issues/1562) · [#1569](https://github.com/ludovic111/horizon/issues/1569) · [#1570](https://github.com/ludovic111/horizon/issues/1570)
 - **Single player on its own server thread** (v0.2.39): Single player runs on a server thread, as vanilla does, so the world keeps ticking smoothly while the window draws. [#1514](https://github.com/ludovic111/horizon/issues/1514) · [docs/server-levels.md](docs/server-levels.md)
 - **GPU occlusion culling on Macs** (v0.2.17): On Macs the GPU now skips terrain hidden behind hills and caves: 8 to 48% more frames per second at 32 chunks on an M4 Pro. [#1434](https://github.com/ludovic111/horizon/issues/1434)

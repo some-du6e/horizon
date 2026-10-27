@@ -44,12 +44,16 @@ use std::{
 
 pub(crate) mod environment;
 mod fluids;
-pub use fluids::{FluidResources, LAVA, PlayerFluids, WATER};
+pub use fluids::{FluidResources, FluidTags, LAVA, PlayerFluids, WATER};
 
 pub struct MotionResources {
     pub attributes: Arc<Catalog>,
     pub blocks: BoundMovementProperties,
     pub climbable: BTreeSet<String>,
+    /// `BlockTags.CAN_GLIDE_THROUGH`: climbable blocks a gliding player passes.
+    pub glide_through: BTreeSet<String>,
+    /// `BlockTags.SOUL_SPEED_BLOCKS`: what Soul Speed's effects look for.
+    pub soul_speed_blocks: BTreeSet<String>,
     pub fall_reset: BTreeSet<String>,
     pub landing: BlockLandingRegistry,
     pub health: crate::health::HealthResources,
@@ -108,9 +112,28 @@ impl MotionResources {
                 suppresses_bounce: tag("minecraft:suppresses_bounce")?,
             })?,
             climbable: tag("minecraft:climbable")?,
+            glide_through: tag("minecraft:can_glide_through")?,
+            soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
             fall_reset: tag("minecraft:fall_damage_resetting")?,
         })
     }
+}
+
+/// What the `location_changed` enchantment effects (Soul Speed) need to know
+/// between ticks.
+#[derive(Clone, Debug, Default)]
+pub struct LocationEffects {
+    /// `MovementAffectedByPredicate`: the block under the player
+    /// (`getBlockPosBelowThatAffectsMyMovement`) is in `#minecraft:soul_speed_blocks`.
+    pub on_soul_speed_block: bool,
+    /// `LivingEntity.lastPos`: the block the player was in last tick.
+    pub block: Option<BlockPos>,
+    /// A landing ran `onChangedBlock` (`LivingEntity.checkFallDamage`).
+    pub landed: bool,
+    /// The Soul Speed level of the boots seen last tick (0: none).
+    pub boots_level: u32,
+    /// The Soul Speed level whose attribute modifiers are on the player (0: none).
+    pub applied_level: u32,
 }
 
 /// Ordered requests and phase records for world/audio/network consumers. Landing
@@ -165,6 +188,11 @@ pub enum MotionEvent {
     /// `NetherPortalBlock.entityInside`: the player's box swept through a
     /// nether portal block.
     InsidePortal {
+        pos: BlockPos,
+    },
+    /// `LayeredCauldronBlock.handleEntityOnFireInside`: a burning player in
+    /// a water or powder snow cauldron; the server lowers its fill level.
+    CauldronExtinguish {
         pos: BlockPos,
     },
     /// `WitherRoseBlock.entityInside`: the player's box swept through a
@@ -250,6 +278,8 @@ pub struct PlayerMotion {
     pub glide_ending: bool,
     /// Glider durability to take this tick (updateFallFlying).
     pub glider_wear: u32,
+    /// Soul Speed's `location_changed` bookkeeping.
+    pub location_effects: LocationEffects,
     /// `LivingEntity.autoSpinAttackTicks` and `autoSpinAttackDmg`: Riptide's
     /// spin. The damage stays until the game has dealt the hit.
     pub auto_spin_attack_ticks: i32,
@@ -303,6 +333,9 @@ pub struct PlayerMotion {
     /// it travels on the server: `isLocalInstanceAuthoritative` is false, so
     /// its moves check no fall damage.
     pub server_copy: bool,
+    /// The span of `events` a wall hit on the server's copy pushed (sound and
+    /// damage): `server_travel` keeps them while it drops the simulated moves.
+    pub wall_hit_events: Option<std::ops::Range<usize>>,
     /// A client's copy of its own player (`Level.isClientSide`): only the
     /// server hurts it (`Entity.hurt` does nothing on a client) and ticks its
     /// food (`ServerPlayer.tick`). Its hurt animation comes from the server.
@@ -438,6 +471,7 @@ impl PlayerMotion {
             fall_fly_ticks: 0,
             glide_ending: false,
             glider_wear: 0,
+            location_effects: LocationEffects::default(),
             auto_spin_attack_ticks: 0,
             auto_spin_attack_dmg: 0.0,
             spin_targets: Vec::new(),
@@ -472,6 +506,7 @@ impl PlayerMotion {
             freeze_immune: false,
             old_position: position,
             server_copy: false,
+            wall_hit_events: None,
             client_side: false,
             block_effects: true,
             powder_snow_entered: Vec::new(),
@@ -760,6 +795,10 @@ impl MotionWorld<'_, '_, '_> {
             .state(self.block(p))
             .ok_or("missing scene state")?
             .name;
+        // A gliding player passes through vines (`CAN_GLIDE_THROUGH`).
+        if self.player.fall_flying && self.resources.glide_through.contains(name) {
+            return Ok(false);
+        }
         let climbable = self.resources.climbable.contains(name);
         if climbable {
             self.player.last_climbable = Some(p);
@@ -829,9 +868,17 @@ impl MotionWorld<'_, '_, '_> {
         let can_glide = self.player.glider
             && !self.player.ground.on_ground
             && !self.player.flying
+            && self.player.status.levitation.is_none()
             && !self.player.fluids.was_touching_water
             && !self.player.is_in_lava();
-        if jumping && !toggled && !was_jumping && !self.player.fall_flying && can_glide {
+        // LocalPlayer.aiStep: `!onClimbable()` before tryToStartFallFlying.
+        if jumping
+            && !toggled
+            && !was_jumping
+            && !self.climbable()?
+            && !self.player.fall_flying
+            && can_glide
+        {
             self.player.fall_flying = true;
         }
         // LivingEntity.tick fallFlyTicks, then updateFallFlying.
@@ -843,8 +890,11 @@ impl MotionWorld<'_, '_, '_> {
                 self.player.fall_distance = 1.0;
             }
             self.player.fall_fly_ticks += 1;
-            // canGlide alone: water and lava don't end a glide.
-            let still = self.player.glider && !self.player.ground.on_ground && !self.player.flying;
+            // canGlide alone: water and lava don't end a glide, levitation does.
+            let still = self.player.glider
+                && !self.player.ground.on_ground
+                && !self.player.flying
+                && self.player.status.levitation.is_none();
             if !still {
                 self.player.glide_ending = true;
             } else if (self.player.fall_fly_ticks + 1) % 10 == 0
@@ -979,6 +1029,7 @@ impl MotionWorld<'_, '_, '_> {
             )
         });
         self.player.try_add_frost(on_air)?;
+        self.update_soul_speed_block()?;
         if self.player.health.tick_count % 40 == 0
             && self.player.is_fully_frozen()
             && self.player.can_freeze()
@@ -990,6 +1041,22 @@ impl MotionWorld<'_, '_, '_> {
             self.check_auto_spin_attack(before_travel);
         }
         Ok(())
+    }
+    /// Refresh whether the player stands on a soul speed block, for the
+    /// `location_changed` enchantment effects (a server's player too, whose
+    /// client does the walking).
+    pub fn update_soul_speed_block(&mut self) -> Result<()> {
+        self.player.location_effects.on_soul_speed_block = self.on_soul_speed_block()?;
+        Ok(())
+    }
+    /// `MovementAffectedByPredicate` for `#minecraft:soul_speed_blocks`.
+    fn on_soul_speed_block(&mut self) -> Result<bool> {
+        let on = self.support(movement_support::MOVEMENT_SUPPORT_OFFSET)?;
+        Ok(self
+            .assets
+            .registry
+            .state(self.block(on))
+            .is_some_and(|s| self.resources.soul_speed_blocks.contains(&s.name)))
     }
     /// Player.travel: swim steering, then LivingEntity.travel (fluids first,
     /// then gliding, then air), keeping 0.6 of the vertical speed while flying.
@@ -1016,7 +1083,14 @@ impl MotionWorld<'_, '_, '_> {
         {
             horizon_world::living_fluid::travel_in_fluid(self, input)?;
         } else if self.player.fall_flying {
-            self.travel_fall_flying()?;
+            // LivingEntity.travelFallFlying: on a climbable the glide ends and
+            // the player moves like in the air.
+            if self.climbable()? {
+                self.travel_in_air(input)?;
+                self.player.fall_flying = false;
+            } else {
+                self.travel_fall_flying()?;
+            }
         } else {
             self.travel_in_air(input)?;
         }
@@ -1043,7 +1117,14 @@ impl MotionWorld<'_, '_, '_> {
         p.server_copy = false;
         (p.position, p.ground, p.collision) = (position, ground, collision);
         (p.history, p.fall_distance, p.steps) = (history, fall_distance, steps);
+        // The wall hit is the server's own: its sound and damage events stay.
+        let kept: Vec<_> = p
+            .wall_hit_events
+            .take()
+            .map(|span| p.events.drain(span).collect())
+            .unwrap_or_default();
         p.events.truncate(events);
+        p.events.extend(kept);
         travelled
     }
     /// `LivingEntity.checkAutoSpinAttack`: the first living entity in the
@@ -1078,7 +1159,7 @@ impl MotionWorld<'_, '_, '_> {
     /// `Entity.applyEffectsFromBlocks` for the blocks Horizon's player reacts
     /// to inside its movement path: powder snow (`PowderSnowBlock.entityInside`
     /// and the FREEZE / EXTINGUISH effects), cobwebs, sweet berry bushes,
-    /// cactus and lit campfires, and the magma block it stands on
+    /// cactus and lit campfires, and the magma and slime blocks it stands on
     /// (`stepOn`). Pressure plates, tripwires and rails are the world tick's
     /// scan.
     pub fn apply_effects_from_blocks(&mut self) -> Result<()> {
@@ -1136,13 +1217,21 @@ impl MotionWorld<'_, '_, '_> {
         // MagmaBlock's hot floor hurts unless it steps carefully (sneaks).
         if self.player.ground.on_ground {
             let on = self.legacy_on_position()?;
-            let magma = self
-                .assets
-                .registry
-                .state(self.block(on))
-                .is_some_and(|s| s.name == "minecraft:magma_block");
+            let under = self.assets.registry.state(self.block(on));
+            let magma = under.is_some_and(|s| s.name == "minecraft:magma_block");
+            let slime = under.is_some_and(|s| s.name == "minecraft:slime_block");
             if magma && !self.player.shift_key_down {
                 self.environment_hurt("minecraft:hot_floor", 1.0)?;
+            }
+            // SlimeBlock.stepOn: a slow walk on slime drags the horizontal
+            // speed (the client moves its own player, so not the server's copy).
+            if slime && !damage_only && !self.player.shift_key_down {
+                let abs_delta_y = self.player.velocity.y.abs();
+                if abs_delta_y < 0.1 {
+                    let scale = 0.4 + abs_delta_y * 0.2;
+                    self.player.velocity.x *= scale;
+                    self.player.velocity.z *= scale;
+                }
             }
         }
         let mut visited = std::collections::HashSet::new();
@@ -1277,21 +1366,31 @@ impl MotionWorld<'_, '_, '_> {
                 continue;
             }
             let powder_snow = name == "minecraft:powder_snow";
+            // A filled cauldron's content top in blocks: the lava's 15/16
+            // (LavaCauldronBlock.FILLED_SHAPE), or a layered cauldron's
+            // getPixelContentHeight, 6 + 3 per level (FILLED_SHAPES).
+            let content_top = match name {
+                "minecraft:lava_cauldron" => Some(15.0 / 16.0),
+                "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron" => {
+                    let level = self
+                        .assets
+                        .registry
+                        .state(state)
+                        .and_then(|s| s.properties.get("level"))
+                        .and_then(|l| l.parse::<u8>().ok())
+                        .unwrap_or(1);
+                    Some((6.0 + 3.0 * f64::from(level)) / 16.0)
+                }
+                _ => None,
+            };
             // getEntityInsideCollisionShape is the whole block but for powder
             // snow (its collision shape, the whole block when it is empty),
             // filled cauldrons, end portals and tripwires; Horizon doesn't
-            // follow the player into those last three.
-            if matches!(
-                name,
-                "minecraft:water_cauldron"
-                    | "minecraft:lava_cauldron"
-                    | "minecraft:powder_snow_cauldron"
-                    | "minecraft:end_portal"
-                    | "minecraft:tripwire"
-            ) {
+            // follow the player into those last two.
+            if matches!(name, "minecraft:end_portal" | "minecraft:tripwire") {
                 continue;
             }
-            let inside = !powder_snow || {
+            let inside = !(powder_snow || content_top.is_some()) || {
                 let context = self.context();
                 let binding = self.collision_binding;
                 let shape = binding.collision_shape_with_context(
@@ -1300,22 +1399,34 @@ impl MotionWorld<'_, '_, '_> {
                     p,
                     &context,
                 )?;
-                shape.is_empty() || shape.boxes() == VoxelShape::block().boxes() || {
-                    let boxes: Vec<_> = shape
-                        .moved(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)))
-                        .boxes()
-                        .to_vec();
-                    self.player
-                        .dimensions
-                        .bounds(from)
-                        .collided_along_vector(to.subtract(from), &boxes)
-                }
+                powder_snow && (shape.is_empty() || shape.boxes() == VoxelShape::block().boxes())
+                    || {
+                        let offset = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                        let mut boxes: Vec<_> = shape.moved(offset).boxes().to_vec();
+                        if let Some(top) = content_top {
+                            // The cauldron's shape or its content,
+                            // Block.column(12, 4, top).
+                            boxes.push(Aabb::new(
+                                Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0).add_vector(offset),
+                                Vec3::new(14.0 / 16.0, top, 14.0 / 16.0).add_vector(offset),
+                            ));
+                        }
+                        self.player
+                            .dimensions
+                            .bounds(from)
+                            .collided_along_vector(to.subtract(from), &boxes)
+                    }
             };
             if inside && visited.insert(p.pack()) {
-                // CactusBlock and CampfireBlock.entityInside (`entity.hurt`),
-                // and WitherRoseBlock's server-side effect.
+                // CactusBlock, CampfireBlock and the cauldrons' entityInside
+                // (`entity.hurt`, the fire and the fill level), and
+                // WitherRoseBlock's server-side effect.
                 match name {
                     "minecraft:cactus" => self.environment_hurt("minecraft:cactus", 1.0)?,
+                    "minecraft:lava_cauldron" => self.lava_cauldron_inside()?,
+                    "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron" => {
+                        self.layered_cauldron_inside(p);
+                    }
                     "minecraft:wither_rose" => {
                         self.player.events.push(MotionEvent::InsideWitherRose);
                     }
@@ -1377,6 +1488,26 @@ impl MotionWorld<'_, '_, '_> {
             self.player.stuck_multiplier = multiplier;
         }
         self.player.impulse.try_reset();
+    }
+    /// `LavaCauldronBlock.entityInside`: CLEAR_FREEZE, LAVA_IGNITE
+    /// (`Entity.lavaIgnite`, 15 seconds) and then `Entity.lavaHurt` (lava,
+    /// 4), as ordinary lava does to the player.
+    fn lava_cauldron_inside(&mut self) -> Result<()> {
+        self.player.ticks_frozen = 0;
+        self.player.ignite_for_ticks(300)?;
+        self.environment_hurt("minecraft:lava", 4.0)
+    }
+    /// `LayeredCauldronBlock.entityInside`: on a server, a burning player
+    /// asks for the cauldron's `handleEntityOnFireInside` (runBefore
+    /// EXTINGUISH, so while still burning), then EXTINGUISH
+    /// (`Entity.clearFire`) puts the fire out.
+    fn layered_cauldron_inside(&mut self, pos: BlockPos) {
+        if self.player.fire_ticks > 0 && !self.player.spectator {
+            self.player
+                .events
+                .push(MotionEvent::CauldronExtinguish { pos });
+        }
+        self.player.fire_ticks = self.player.fire_ticks.min(0);
     }
     /// `WebBlock.entityInside`: stuck at a quarter of the speed, half with
     /// the Weaving effect.
@@ -1481,7 +1612,7 @@ impl MotionWorld<'_, '_, '_> {
         let lean = pitch;
         let look_h = (look.x * look.x + look.z * look.z).sqrt();
         let move_h = (v.x * v.x + v.z * v.z).sqrt();
-        let gravity = 0.08;
+        let gravity = living_motion::effective_gravity(self)?;
         let lift = f64::from(lean.cos()).powi(2);
         let mut m = Vec3::new(v.x, v.y + gravity * (-1.0 + lift * 0.75), v.z);
         if m.y < 0.0 && look_h > 0.0 {
@@ -1509,7 +1640,44 @@ impl MotionWorld<'_, '_, '_> {
         }
         self.player.velocity = Vec3::new(m.x * 0.99, m.y * 0.98, m.z * 0.99);
         let movement = self.player.velocity;
-        self.move_self(movement)
+        self.move_self(movement)?;
+        // LivingEntity.handleFallFlyingCollisions: only the server hurts.
+        if !self.player.client_side && self.player.collision.horizontal {
+            let new_h = {
+                let v = self.player.velocity;
+                (v.x * v.x + v.z * v.z).sqrt()
+            };
+            let dmg = ((move_h - new_h) * 10.0 - 3.0) as f32;
+            if dmg > 0.0 {
+                let first = self.player.events.len();
+                // getFallDamageSound((int) dmg)
+                let sound = if dmg as i32 > 4 {
+                    crate::landing::SceneSound::BigFall
+                } else {
+                    crate::landing::SceneSound::SmallFall
+                };
+                self.player
+                    .events
+                    .push(MotionEvent::Fall(crate::landing::FallEvent::Sound {
+                        sound,
+                        position: None,
+                        volume: 1.0,
+                        pitch: 1.0,
+                    }));
+                let id = self
+                    .resources
+                    .health
+                    .damage
+                    .id("minecraft:fly_into_wall")
+                    .ok_or("missing fly_into_wall damage type")?;
+                let rules = self.scene.health_rules;
+                self.player.hurt(&self.resources.health, rules, id, dmg)?;
+                if self.player.server_copy {
+                    self.player.wall_hit_events = Some(first..self.player.events.len());
+                }
+            }
+        }
+        Ok(())
     }
     /// `LocalPlayer.move`: the move, then `updateAutoJump` with the float
     /// horizontal displacement.
@@ -1786,6 +1954,10 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
         // distance every tick, so landing under either does not hurt.
         if self.player.status.slow_falling || self.player.status.levitation.is_some() {
             self.player.fall_distance = 0.0;
+        }
+        // LivingEntity.checkFallDamage: a landing runs onChangedBlock.
+        if grounded && self.player.fall_distance > 0.0 {
+            self.player.location_effects.landed = true;
         }
         if self.player.spawn_extra_particles_on_fall && grounded && self.player.fall_distance > 0.0
         {
@@ -2390,6 +2562,111 @@ mod tests {
             .unwrap();
         }
         assert_eq!(player.position.y, 4.0);
+    }
+
+    #[test]
+    fn a_lava_cauldron_burns_the_player_inside_it() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let cauldron = assets
+            .registry
+            .default_state("minecraft:lava_cauldron")
+            .unwrap();
+        scene.set(20, 4, 20, cauldron).unwrap();
+        let mut tick = |player: &mut PlayerMotion| {
+            MotionWorld {
+                entities: &[],
+                player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            }
+            .controlled_simulation_tick(Default::default())
+            .unwrap();
+        };
+        // Standing on the cauldron's floor, in its lava.
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 4.25, 20.5)).unwrap();
+        player.ticks_frozen = 40;
+        tick(&mut player);
+        assert!(player.health.health() < 20.0, "the lava must hurt");
+        assert!(player.fire_ticks > 0, "the lava must ignite");
+        assert_eq!(player.ticks_frozen, 0);
+        // Beside it, nothing.
+        let mut away = PlayerMotion::new(&resources, Vec3::new(22.5, 4.0, 20.5)).unwrap();
+        tick(&mut away);
+        assert_eq!(away.health.health(), 20.0);
+        assert!(away.fire_ticks <= 0);
+    }
+
+    #[test]
+    fn a_water_cauldron_puts_out_a_burning_player() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let water = assets
+            .registry
+            .resolve(&horizon_world::chunk::BlockState {
+                name: "minecraft:water_cauldron".into(),
+                properties: [("level".to_owned(), "3".to_owned())].into(),
+            })
+            .unwrap();
+        scene.set(20, 4, 20, water).unwrap();
+        let mut tick = |player: &mut PlayerMotion| {
+            MotionWorld {
+                entities: &[],
+                player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            }
+            .controlled_simulation_tick(Default::default())
+            .unwrap();
+        };
+        let asks = |player: &PlayerMotion| {
+            player
+                .events
+                .iter()
+                .filter(|e| matches!(e, MotionEvent::CauldronExtinguish { .. }))
+                .count()
+        };
+        // Burning, on the cauldron's floor in its water: put out, and the
+        // server is asked to lower the water.
+        let mut burning = PlayerMotion::new(&resources, Vec3::new(20.5, 4.25, 20.5)).unwrap();
+        burning.fire_ticks = 100;
+        tick(&mut burning);
+        assert!(burning.fire_ticks <= 0, "the water must put the fire out");
+        assert_eq!(asks(&burning), 1);
+        // Not burning: nothing to lower.
+        let mut dry = PlayerMotion::new(&resources, Vec3::new(20.5, 4.25, 20.5)).unwrap();
+        tick(&mut dry);
+        assert_eq!(asks(&dry), 0);
     }
 
     #[test]
@@ -3011,8 +3288,13 @@ mod tests {
             if client_side {
                 w.player.health.flash_health_change(20.0);
                 assert_eq!(w.player.health.hurt_animation_time, 0);
+                assert_eq!(w.player.health.hurt.cooldown, 0);
                 w.player.health.flash_health_change(12.0);
                 assert_eq!(w.player.health.hurt_animation_time, 10);
+                // LocalPlayer.hurtTo's damageCooldownTime: the HUD's hearts blink.
+                assert_eq!(w.player.health.hurt.cooldown, 20);
+                w.player.health.flash_health_change(25.0);
+                assert_eq!(w.player.health.hurt.cooldown, 10);
             }
         }
     }
