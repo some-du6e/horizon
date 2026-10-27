@@ -50,8 +50,11 @@ files on several threads; every file is still checked in full. `HORIZON_PREPARE_
 it all one step after another (for a machine short on memory).
 Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
 -XX:+UseSerialGC`: short batch jobs side by side lose more CPU to the C2 compiler than it wins
-back, and the serial collector keeps their heaps small (fresh: 105 s before, 63–66 s after, the
-JVMs at most 1.25 GB together, same output).
+back, and the serial collector keeps their heaps small (fresh: 105 s before, 63–66 s after, same
+output). Inside the server worker the collision exporter skips its 62 MB verification inputs,
+which only the parity harness reads, and the gameplay facts exporter streams its 56 MB file:
+the worker peaks at about 480 MB instead of 1.25 GB, and a fresh preparation at about 1.06 GB
+for all its processes instead of 1.47 GB. Threads reading one jar share its parsed member list.
 
 A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
 sources, its jar and its outputs. Most of those are in `horizon-resources.json`; the block

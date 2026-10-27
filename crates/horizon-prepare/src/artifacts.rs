@@ -557,7 +557,7 @@ fn artifact_fields(artifact: &Value) -> Result<(&str, &str), String> {
 
 /// `(sha256, identifier, path)` lines of a server bundle's versions.list or libraries.list.
 fn bundle_entries(
-    archive: &mut zip::ZipArchive<fs::File>,
+    archive: &mut crate::Jar,
     name: &str,
 ) -> Result<Vec<(String, String, PathBuf, String)>, String> {
     let text = crate::zip_text(archive, name)?;
@@ -584,7 +584,7 @@ fn bundle_entries(
 }
 
 fn extract_verified(
-    archive: &mut zip::ZipArchive<fs::File>,
+    archive: &mut crate::Jar,
     member: &str,
     destination: &Path,
     checksum: &str,
@@ -622,7 +622,7 @@ fn unpack_server(
     let entries = bundle_entries(&mut archive, "META-INF/libraries.list")?;
     let libraries = crate::pool::map(
         &entries,
-        || crate::open_zip(&server),
+        || Ok(archive.clone()),
         |archive, (checksum, _, path, relative)| {
             let destination = directory.join("libraries/server").join(path);
             extract_verified(
