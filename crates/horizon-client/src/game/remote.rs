@@ -4118,9 +4118,10 @@ impl Game<'_> {
     fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
         // FireworkRocketItem.useOn: SUCCESS on the client too (only the
         // server launches it), so neither UseItem nor the off hand follows;
-        // PASS while gliding, so the use boosts instead.
+        // PASS while gliding, so the use boosts instead, and in adventure
+        // mode (ItemStack.useOn, without can_place_on).
         if &*stack.item == "minecraft:firework_rocket" {
-            return !self.player.as_ref().is_some_and(|p| p.fall_flying);
+            return self.may_build() && !self.player.as_ref().is_some_and(|p| p.fall_flying);
         }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
