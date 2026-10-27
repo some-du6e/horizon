@@ -14,6 +14,12 @@ pub struct Jdk {
 
 const TIMEOUT: Duration = Duration::from_secs(3600);
 
+/// Options for every JVM preparing starts (the exporters, the data generator, javac with `-J`).
+/// They are short batch jobs that run three at a time: the C2 compiler's background work and G1's
+/// concurrent threads cost more CPU than they win back. Measured on the pinned jars, a fresh
+/// preparation took 105 s with the defaults and 66-70 s with these, with the same output.
+pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseParallelGC"];
+
 /// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal.
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
     let command = Command::new(program);
@@ -339,6 +345,7 @@ impl Jdk {
     pub fn javac(&self, major: i64, args: &[String], log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.javac);
         command
+            .args(BATCH_OPTIONS.map(|option| format!("-J{option}")))
             .args(["--release", &major.to_string(), "-proc:none"])
             .args(args);
         run(command, log)
@@ -346,7 +353,7 @@ impl Jdk {
 
     pub fn java(&self, args: &[String], cwd: Option<&Path>, log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.java);
-        command.args(args);
+        command.args(BATCH_OPTIONS).args(args);
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
