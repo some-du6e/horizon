@@ -117,9 +117,12 @@ impl Game<'_> {
             item: stack.clone(),
         }
     }
-    /// `FireworkRocketItem.useOn`: launch from the clicked point.
+    /// `FireworkRocketItem.useOn`: launch from the clicked point. A gliding
+    /// player passes (their UseItem boosts them).
     pub(super) fn launch_firework(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
-        if &*stack.item != "minecraft:firework_rocket" {
+        if &*stack.item != "minecraft:firework_rocket"
+            || self.player.as_ref().is_some_and(|p| p.fall_flying)
+        {
             return false;
         }
         let at = Vec3::new(

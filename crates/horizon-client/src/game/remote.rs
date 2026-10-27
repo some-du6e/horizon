@@ -4107,6 +4107,12 @@ impl Game<'_> {
     /// block (stripping, scraping, removing wax, tilling, making a path).
     /// Whether the item's use succeeded, which ends the click.
     fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
+        // FireworkRocketItem.useOn: SUCCESS on the client too (only the
+        // server launches it), so neither UseItem nor the off hand follows;
+        // PASS while gliding, so the use boosts instead.
+        if &*stack.item == "minecraft:firework_rocket" {
+            return !self.player.as_ref().is_some_and(|p| p.fall_flying);
+        }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
             f64::from(hit.pos[1]) + 0.5,
