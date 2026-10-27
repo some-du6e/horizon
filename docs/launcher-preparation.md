@@ -49,8 +49,9 @@ when its lane is done. The two sides compile at once too. Imports and checks has
 files on several threads; every file is still checked in full. `HORIZON_PREPARE_JOBS=1` runs
 it all one step after another (for a machine short on memory).
 Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
--XX:+UseParallelGC`: short batch jobs side by side lose more CPU to the C2 compiler and G1's
-concurrent threads than those win back (105 s before, 66–70 s after, same output).
+-XX:+UseSerialGC`: short batch jobs side by side lose more CPU to the C2 compiler than it wins
+back, and the serial collector keeps their heaps small (fresh: 105 s before, 63–66 s after, the
+JVMs at most 1.25 GB together, same output).
 
 A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
 sources, its jar and its outputs. Most of those are in `horizon-resources.json`; the block
