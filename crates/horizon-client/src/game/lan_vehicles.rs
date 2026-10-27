@@ -317,6 +317,9 @@ impl Game<'_> {
         let seat = self.player_boat_seat(i);
         let g = &mut host.hub.guests[gi];
         g.vehicle_good = Some([target.x, target.y, target.z]);
+        // handlePlayerKnownMovement: the boat's move.
+        let delta = target.subtract(old);
+        (g.known_movement, g.movement_this_tick) = ([delta.x, delta.y, delta.z], true);
         g.previous_position = g.position;
         g.position = [seat.x, seat.y, seat.z];
     }

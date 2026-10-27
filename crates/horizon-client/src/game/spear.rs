@@ -133,6 +133,7 @@ impl Game<'_> {
         for index in self.mobs_along_attack_range() {
             if self.stab_mob(
                 index,
+                self.selected,
                 damage,
                 scale,
                 [true, weapon.deals_knockback, weapon.dismounts],
@@ -151,13 +152,41 @@ impl Game<'_> {
         self.swing_hand(Hand::Main, self.held_attack_animation());
         (hit, motion)
     }
+    /// The player's movement over the last tick: a ridden mob's (a passenger
+    /// takes its vehicle's), else what its client last reported for a
+    /// server's player (`lastKnownClientMovement`), else `local` of the
+    /// window's own player.
+    fn reported_movement(
+        &self,
+        local: impl Fn(&horizon_client::motion::PlayerMotion) -> Vec3,
+    ) -> Vec3 {
+        if let Some(m) = self
+            .riding
+            .and_then(|v| self.mobs.iter().find(|m| m.id == v))
+        {
+            return m.position.subtract(m.previous);
+        }
+        self.player
+            .as_ref()
+            .map_or(Vec3::ZERO, |p| p.known_movement.unwrap_or_else(|| local(p)))
+    }
+    /// `Player.getKnownMovement`: the window's own player's motion
+    /// (`Entity.getDeltaMovement`).
+    fn known_movement(&self) -> Vec3 {
+        self.reported_movement(|p| p.velocity)
+    }
+    /// `Player.getKnownSpeed`: the window's own player's move this tick
+    /// (`Entity.computeSpeed`).
+    fn known_speed(&self) -> Vec3 {
+        self.reported_movement(|p| p.position.subtract(p.old_position))
+    }
     /// `ProjectileUtil.getHitEntitiesAlong` over the mobs for the main hand's
     /// attack range: the look's segment from the minimum reach to the
     /// maximum (longer by the player's motion along the look), cut at the
     /// first block. A mob is hit when the segment passes through its box, or
     /// through the box grown by the range's hitbox margin.
     fn mobs_along_attack_range(&self) -> Vec<usize> {
-        let (Some(eye), Some(p)) = (self.eye_position(), self.player.as_ref()) else {
+        let Some(eye) = self.eye_position() else {
             return Vec::new();
         };
         let range = self.inventory[self.selected]
@@ -176,7 +205,8 @@ impl Game<'_> {
         };
         let margin = f64::from(value("hitbox_margin", 0.3));
         let look = view_vector(self.yaw, self.pitch);
-        let along = p.velocity.x * look[0] + p.velocity.y * look[1] + p.velocity.z * look[2];
+        let moved = self.known_movement();
+        let along = moved.x * look[0] + moved.y * look[1] + moved.z * look[2];
         let (start, mut end) = (f64::from(min), f64::from(max) + along.max(0.0));
         if let Some(block) = self.clip_ray(eye, look, end) {
             end = (0..3)
@@ -214,7 +244,19 @@ impl Game<'_> {
     /// unless the stab comes from the hand charging the spear, then a 0.4
     /// knockback and the weapon's own (Knockback), the rider taken off its
     /// mount, and the rest of a landed hit. Whether the mob was affected.
-    fn stab_mob(&mut self, index: usize, base: f32, scale: f32, deals: [bool; 3]) -> bool {
+    ///
+    /// `slot` holds the weapon (the main hand's, or `OFFHAND_SLOT` for an
+    /// off-hand charge). The enchanted damage and the knockback read the
+    /// main hand still (`getWeaponItem`); the damage source and the item's
+    /// hit (`itemAttackInteraction`) are the slot's.
+    fn stab_mob(
+        &mut self,
+        index: usize,
+        slot: usize,
+        base: f32,
+        scale: f32,
+        deals: [bool; 3],
+    ) -> bool {
         let [deals_damage, deals_knockback, dismounts] = deals;
         let kind = format!(
             "minecraft:{}",
@@ -222,7 +264,7 @@ impl Game<'_> {
         );
         let mut magic = self.enchant_damage_bonus(&kind);
         let mut base = base;
-        if self.using.is_none_or(|(slot, _)| slot != self.selected) {
+        if self.using.is_none_or(|(used, _)| used != slot) {
             magic *= scale;
             base *= 0.2 + scale * scale * 0.8;
         }
@@ -231,7 +273,11 @@ impl Game<'_> {
         };
         let old_health = self.mobs[index].health;
         let source = self.attack_source(from);
-        let hurt = deals_damage && self.hurt_by_player(index, base + magic, source);
+        let off_hand = slot == super::shield::OFFHAND_SLOT;
+        let hurt = deals_damage
+            && self.with_weapon_in_main_hand(off_hand, |g| {
+                g.hurt_by_player(index, base + magic, source)
+            });
         if deals_knockback {
             // causeExtraKnockback(0.4), then causeExtraKnockback(getKnockback).
             let (xd, zd) = self.extra_knockback_direction();
@@ -264,7 +310,7 @@ impl Game<'_> {
         // LivingEntity.setLastHurtMob (tamed wolves join in).
         self.combat.last_hurt_mob = Some((self.mobs[index].id, self.world.game_time));
         if hurt {
-            self.weapon_hit(index);
+            self.with_weapon_in_main_hand(off_hand, |g| g.weapon_hit(index));
         }
         // Player.damageStatsAndHearts.
         let mob = &self.mobs[index];
@@ -301,6 +347,19 @@ impl Game<'_> {
             }
         }
         true
+    }
+    /// `f` with the off hand's stack where the main hand's is, when
+    /// `off_hand`: the code that reads the weapon from the main hand then
+    /// reads (and wears, or breaks) the off hand's.
+    fn with_weapon_in_main_hand<R>(&mut self, off_hand: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !off_hand {
+            return f(self);
+        }
+        let selected = self.selected;
+        std::mem::swap(&mut self.inventory[selected], &mut self.offhand);
+        let result = f(self);
+        std::mem::swap(&mut self.inventory[selected], &mut self.offhand);
+        result
     }
     /// `Item.use` for a kinetic weapon in the acting hand: `startUsingItem`
     /// (a new `recentKineticEnemies`) and `KineticWeapon.makeSound`, which a
@@ -354,14 +413,15 @@ impl Game<'_> {
         if used < 0 {
             return;
         }
-        let Some(p) = self.player.as_ref() else {
+        if self.player.is_none() {
             return;
-        };
-        // KineticWeapon.getMotion: the known speed per second, the player's
-        // move this tick.
+        }
+        // KineticWeapon.getMotion: the known speed, per second.
         let look = view_vector(self.yaw, self.pitch);
         let along = |v: Vec3| (v.x * look[0] + v.y * look[1] + v.z * look[2]) * 20.0;
-        let speed = along(p.position.subtract(p.old_position));
+        let speed = along(self.known_speed());
+        // The charging hand's slot (the stab's EquipmentSlot).
+        let slot = self.using.map_or(self.selected, |(slot, _)| slot);
         let (now, who) = (self.world.game_time, self.lan_acting);
         let mut affected = false;
         for index in self.mobs_along_attack_range() {
@@ -385,7 +445,8 @@ impl Game<'_> {
                 // getAttributeBaseValue(ATTACK_DAMAGE): 1 for a player.
                 let damage = 1.0 + (relative * f64::from(k.damage_multiplier)).floor() as f32;
                 let [dismount, knockback, damages] = deals;
-                affected |= self.stab_mob(index, damage, 1.0, [damages, knockback, dismount]);
+                let deals = [damages, knockback, dismount];
+                affected |= self.stab_mob(index, slot, damage, 1.0, deals);
             }
         }
         if affected {

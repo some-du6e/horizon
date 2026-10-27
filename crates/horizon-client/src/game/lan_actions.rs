@@ -294,6 +294,11 @@ impl Game<'_> {
         motion.flying = g.flying;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
+        motion.known_movement = Some(Vec3::new(
+            g.known_movement[0],
+            g.known_movement[1],
+            g.known_movement[2],
+        ));
         motion.invulnerable = motion.may_fly;
         let _ = motion.set_health(g.health, false);
         motion.health.food.food = g.food;

@@ -2012,7 +2012,14 @@ impl Hub {
                     }
                     g.max_unacknowledged = 10;
                 }
-                S::ClientTickEnd(_) => self.guests[i].position_this_tick = false,
+                // handleClientTickEnd: no move this tick, no known movement.
+                S::ClientTickEnd(_) => {
+                    let g = &mut self.guests[i];
+                    if !g.movement_this_tick {
+                        g.known_movement = [0.0; 3];
+                    }
+                    (g.position_this_tick, g.movement_this_tick) = (false, false);
+                }
                 S::ClientInformation(info) => {
                     let g = &mut self.guests[i];
                     g.view_distance =
@@ -2173,6 +2180,8 @@ impl Hub {
             g.moves_from_ground = g.on_ground;
         }
         g.moves.push((moved, flags & 1 != 0));
+        // handlePlayerKnownMovement.
+        (g.known_movement, g.movement_this_tick) = (moved, true);
         g.yaw = yaw;
         g.pitch = pitch.clamp(-90.0, 90.0);
         g.head_yaw = g.yaw;

@@ -329,6 +329,9 @@ pub struct PlayerMotion {
     pub freeze_immune: bool,
     /// `Entity.oldPosition`: where this tick started.
     pub old_position: Vec3,
+    /// A server's player: `ServerPlayer.lastKnownClientMovement`, the move its
+    /// client last reported (`None` for the window's own player).
+    pub known_movement: Option<Vec3>,
     /// The server's copy of a player another client moves (a LAN guest), while
     /// it travels on the server: `isLocalInstanceAuthoritative` is false, so
     /// its moves check no fall damage.
@@ -505,6 +508,7 @@ impl PlayerMotion {
             leather_boots: false,
             freeze_immune: false,
             old_position: position,
+            known_movement: None,
             server_copy: false,
             wall_hit_events: None,
             client_side: false,
