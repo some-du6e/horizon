@@ -17,6 +17,7 @@ impl Worker {
             classes.file_name().unwrap().to_string_lossy()
         )))?;
         let mut child = java::command(&run.jdk.java)
+            .args(java::BATCH_OPTIONS)
             .args([
                 "-Xmx2G",
                 "-cp",

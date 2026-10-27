@@ -48,6 +48,9 @@ need the block facts and the reports, and the manifest come after all four. A wo
 when its lane is done. The two sides compile at once too. Imports and checks hash the pinned
 files on several threads; every file is still checked in full. `HORIZON_PREPARE_JOBS=1` runs
 it all one step after another (for a machine short on memory).
+Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
+-XX:+UseParallelGC`: short batch jobs side by side lose more CPU to the C2 compiler and G1's
+concurrent threads than those win back (105 s before, 66–70 s after, same output).
 
 A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
 sources, its jar and its outputs. Most of those are in `horizon-resources.json`; the block
