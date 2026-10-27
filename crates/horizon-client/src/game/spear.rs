@@ -149,7 +149,11 @@ impl Game<'_> {
         {
             self.audio.play(sound, at, 1.0, 1.0);
         }
-        self.swing_hand(Hand::Main, self.held_attack_animation());
+        // `swing(MAIN_HAND)`: a server's player's, for the players around;
+        // the window's own player swings once, as its client.
+        if self.lan_acting.is_some() {
+            self.swing_hand(Hand::Main, self.held_attack_animation());
+        }
         (hit, motion)
     }
     /// The player's movement over the last tick: a ridden mob's (a passenger
