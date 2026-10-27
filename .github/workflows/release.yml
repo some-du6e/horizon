@@ -82,37 +82,11 @@ jobs:
   exporters:
     needs: decide
     if: needs.decide.outputs.release == 'true'
-    # This runner holds the maintainer's own pinned Minecraft jars. Only our classes leave it.
-    runs-on: ${{ vars.MAC_RUNNER || 'ludovics-mac-mini' }}
-    # Three full preparations (two isolated, one batched) besides the compile.
-    timeout-minutes: 60
+    # Fork test build: no Minecraft jars here. A stub bundle that never validates, so horizon-prepare
+    # compiles the exporters on the player's machine with their JDK (throwaway, not for merging).
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.decide.outputs.head }}
-          persist-credentials: false
-          clean: true
-      - uses: dtolnay/rust-toolchain@stable
-      - run: bash tools/ci/runner-env.sh
-      - run: bash tools/ci/vanilla-data.sh
-      - name: Compile and validate original exporters against the pinned jars
-        shell: bash
-        run: |
-          set -euo pipefail
-          # target/ is gone after the clean checkout, and vanilla-data.sh builds the preparer only when it
-          # prepares afresh.
-          cargo build --release --locked -p horizon-prepare
-          # Compiled here, never taken from the runner's shared preparations: pull requests' parity jobs
-          # write those (vanilla-data.sh links .local/exporters to them).
-          rm -rf .local/exporters
-          bundle=$(target/release/horizon-prepare compile-exporters --root "$PWD" | tail -1)
-          mkdir -p exporters
-          cp -R "$bundle/server" "$bundle/client" "$bundle/manifest.json" exporters/
-          # Only our classes and their manifest leave this runner.
-          stray=$(find exporters -type f ! -path exporters/manifest.json \
-            ! \( -name '*.class' \( -path 'exporters/server/dev/horizonlab/parity/*' -o -path 'exporters/client/dev/horizonlab/parity/*' \) \))
-          [ -z "$stray" ] || { echo "::error::not one of our classes: $stray"; exit 1; }
-          python3 tools/check_prepare_exporters.py --binary target/release/horizon-prepare
+      - run: mkdir -p exporters && echo '{"key":"fork-test-build","classes":{}}' > exporters/manifest.json
       - uses: actions/upload-artifact@v4
         with:
           name: original-exporters
