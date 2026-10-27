@@ -423,10 +423,12 @@ impl Run<'_> {
         log: &Path,
     ) -> Result<(), String> {
         (self.log)(&format!("Exporting {what} ({})", mains.join(", ")));
+        let fail = |e: String| format!("{e} while exporting {what}; see {}", log.display());
+        // Compiled first, so the time is this step's (the JVM's start included).
+        self.bundle().map_err(fail)?;
         let started = Instant::now();
         mkdir(classes)?;
         let file = self.log_file(log)?;
-        let fail = |e: String| format!("{e} while exporting {what}; see {}", log.display());
         for main in mains {
             self.run(heap, classpath, main, args, &file, log)
                 .map_err(fail)?;

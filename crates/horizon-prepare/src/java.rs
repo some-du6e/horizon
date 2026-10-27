@@ -15,10 +15,11 @@ pub struct Jdk {
 const TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// Options for every JVM preparing starts (the exporters, the data generator, javac with `-J`).
-/// They are short batch jobs that run three at a time: the C2 compiler's background work and G1's
-/// concurrent threads cost more CPU than they win back. Measured on the pinned jars, a fresh
-/// preparation took 105 s with the defaults and 66-70 s with these, with the same output.
-pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseParallelGC"];
+/// They are short batch jobs that run three at a time: the C2 compiler's background work costs
+/// more CPU than it wins back, and the serial collector keeps their heaps small. Measured on the
+/// pinned jars, a fresh preparation took 105 s with the defaults and 63-66 s with these, its
+/// JVMs together at most 1.25 GB (2 GB with the parallel collector, as fast), same output.
+pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
 
 /// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal.
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
