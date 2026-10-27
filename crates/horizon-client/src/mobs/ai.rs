@@ -65,13 +65,27 @@ impl Mob {
     }
     /// `LivingEntity.swing` with a `SwingAnimation`: a swing in its first
     /// half keeps going, otherwise this one starts with its own duration.
-    pub fn swing_with(&mut self, animation: crate::first_person::SwingAnimation) {
+    /// Whether it started.
+    pub fn swing_with(&mut self, animation: crate::first_person::SwingAnimation) -> bool {
         let half = self.swing_ticks() / 2;
         if !self.ai.swinging || self.ai.swing_time >= half || self.ai.swing_time < 0 {
             self.ai.swing_time = -1;
             self.ai.swinging = true;
             self.ai.swing_duration = animation.duration.max(1);
             self.extra.swing_stab = animation.kind == 2;
+            return true;
+        }
+        false
+    }
+    /// `swing_with` by the main hand or the off hand, which sets the arm that
+    /// swings (`currentSwing.hand().asArm(mainArm)`).
+    pub fn swing_arm_with(
+        &mut self,
+        main_hand: bool,
+        animation: crate::first_person::SwingAnimation,
+    ) {
+        if self.swing_with(animation) {
+            self.extra.swing_right_arm = Some(main_hand != self.main_arm_left());
         }
     }
     /// The current swing's duration (`SwingAnimation.DEFAULT`'s 6 ticks
@@ -459,6 +473,7 @@ pub fn tick_swing(m: &mut Mob) {
             m.ai.swing_time = 0;
             m.ai.swinging = false;
             m.extra.swing_stab = false;
+            m.extra.swing_right_arm = None;
         }
     } else {
         m.ai.swing_time = 0;

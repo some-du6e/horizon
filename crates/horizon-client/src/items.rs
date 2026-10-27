@@ -143,6 +143,8 @@ pub struct ItemInfo {
     pub kinetic_weapon: Option<crate::spear_anim::KineticTimings>,
     /// `kinetic_weapon.sound`: played as the charge starts.
     pub kinetic_sound: Option<String>,
+    /// `kinetic_weapon.hit_sound`: the charging player hears it on a hit.
+    pub kinetic_hit_sound: Option<String>,
 }
 /// `SoundEvent.CODEC`: a registered id, or a direct `{sound_id, range}`.
 fn sound_event(v: &Value) -> Option<String> {
@@ -763,6 +765,7 @@ impl Items {
                         &c["minecraft:kinetic_weapon"],
                     ),
                     kinetic_sound: sound_event(&c["minecraft:kinetic_weapon"]["sound"]),
+                    kinetic_hit_sound: sound_event(&c["minecraft:kinetic_weapon"]["hit_sound"]),
                 },
             );
             order.push(id);

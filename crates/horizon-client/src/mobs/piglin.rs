@@ -431,7 +431,11 @@ pub fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
     } else {
         PiglinPose::Default
     };
-    piglin_pose(p, s, pose, 25.0, m.extra.using_item as f32);
+    // HumanoidMobRenderer.getArmPose: a spear's arm (a golden spear).
+    let mut arms = super::anim::Hum::new(super::anim::ArmPose::Empty, super::anim::ArmPose::Empty);
+    arms.swing_right_arm = m.extra.swing_right_arm;
+    super::anim::spear_arms(&mut arms, m, s);
+    piglin_pose_with(p, s, pose, 25.0, m.extra.using_item as f32, arms);
 }
 /// `PiglinArmPose`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,8 +449,20 @@ pub enum PiglinPose {
 }
 /// `PiglinModel.setupAnim` for a piglin facing right-handed.
 pub fn piglin_pose(p: &mut Poses, s: &State, pose: PiglinPose, max_charge: f32, ticks: f32) {
-    use super::anim::{ArmPose, Hum, humanoid};
-    let mut h = Hum::new(ArmPose::Empty, ArmPose::Empty);
+    use super::anim::{ArmPose, Hum};
+    let arms = Hum::new(ArmPose::Empty, ArmPose::Empty);
+    piglin_pose_with(p, s, pose, max_charge, ticks, arms);
+}
+/// `piglin_pose` with the arm poses `h` starts from.
+fn piglin_pose_with(
+    p: &mut Poses,
+    s: &State,
+    pose: PiglinPose,
+    max_charge: f32,
+    ticks: f32,
+    mut h: super::anim::Hum,
+) {
+    use super::anim::humanoid;
     h.weapon_swing = pose == PiglinPose::MeleeWeapon;
     h.charge = (max_charge, ticks);
     humanoid(p, s, &h);

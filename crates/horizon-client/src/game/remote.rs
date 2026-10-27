@@ -2145,6 +2145,10 @@ impl Game<'_> {
                 if p.event == super::totem::TOTEM_EVENT {
                     self.remote_totem(p.id);
                 }
+                // LivingEntity.handleEntityEvent 2: a spear charge hit.
+                if p.event == 2 {
+                    self.remote_kinetic_hit(p.id);
+                }
             }
             C::Animate(p) => self.remote_animate(p.id, p.action),
             // ClientPacketListener.handleSwingAnimation: the entity swings
@@ -2158,7 +2162,7 @@ impl Game<'_> {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
                     self.swing_hand(hand, animation);
                 } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
-                    m.swing_with(animation);
+                    m.swing_arm_with(hand == Hand::Main, animation);
                 }
             }
             // The player's own instances: its maximum health (the hearts the
