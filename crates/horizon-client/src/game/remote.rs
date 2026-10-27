@@ -4320,6 +4320,17 @@ impl Game<'_> {
         if self.with_hand(hand, |g| g.remote_use_book(&held)) {
             return true;
         }
+        // FireworkRocketItem.use: SUCCESS while gliding (only the server
+        // launches it), so startUseItem swings this hand itself and the
+        // other hand gets no turn; a vanilla server swings it for the
+        // others only.
+        if &*held.item == "minecraft:firework_rocket" {
+            let boosts = self.player.as_ref().is_some_and(|p| p.fall_flying);
+            if boosts {
+                self.with_hand(hand, Game::swing_arm);
+            }
+            return boosts;
+        }
         self.with_hand(hand, |g| g.remote_start_held_use(&held));
         item_has_use(&info)
     }
