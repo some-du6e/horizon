@@ -1133,7 +1133,20 @@ impl Game<'_> {
         for (k, v) in ["x", "y", "z"].into_iter().zip(pos) {
             full.insert(k.into(), Tag::Int(v));
         }
-        if let Some((_, loaded)) = horizon_client::save::decode_block_entity(&Tag::Compound(full)) {
+        if let Some((_, mut loaded)) =
+            horizon_client::save::decode_block_entity(&Tag::Compound(full))
+        {
+            // BeaconBlockEntity.loadAdditional reads the powers, not
+            // `Levels`: the client's own beam and count stay.
+            if let (BlockEntity::Beacon(new), Some(BlockEntity::Beacon(old))) =
+                (&mut loaded, self.world.block_entities.get(&key))
+            {
+                **new = horizon_client::containers::Beacon {
+                    primary: new.primary.take(),
+                    secondary: new.secondary.take(),
+                    ..(**old).clone()
+                };
+            }
             self.world.block_entities.insert(key, loaded);
             // The section is drawn again with what the block entity shows.
             let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -3206,6 +3219,9 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
         });
+        if running {
+            self.client_tick_beacons();
+        }
         self.sync_moving_pistons();
         self.tick_hand();
         self.tick_particles();
