@@ -619,17 +619,21 @@ fn unpack_server(
         &game,
         checksum,
     )?;
-    let mut libraries = Vec::new();
-    for (checksum, _, path, relative) in bundle_entries(&mut archive, "META-INF/libraries.list")? {
-        let destination = directory.join("libraries/server").join(path);
-        extract_verified(
-            &mut archive,
-            &format!("META-INF/libraries/{relative}"),
-            &destination,
-            checksum.as_str(),
-        )?;
-        libraries.push(destination);
-    }
+    let entries = bundle_entries(&mut archive, "META-INF/libraries.list")?;
+    let libraries = crate::pool::map(
+        &entries,
+        || crate::open_zip(&server),
+        |archive, (checksum, _, path, relative)| {
+            let destination = directory.join("libraries/server").join(path);
+            extract_verified(
+                archive,
+                &format!("META-INF/libraries/{relative}"),
+                &destination,
+                checksum.as_str(),
+            )?;
+            Ok(destination)
+        },
+    )?;
     Ok((game, libraries))
 }
 
@@ -672,7 +676,7 @@ pub fn import(
     ));
     let server = import_server(lock, server_jar)?;
     let (server, server_libraries) = unpack_server(server, &lock.directory, id)?;
-    let mut client_libraries = Vec::new();
+    let mut imports = Vec::new();
     for (name, artifact) in client_library_artifacts(&manifest)? {
         let (path, sha1) = artifact_fields(artifact)?;
         let relative = safe_relative(path).ok_or("Unsafe library path")?;
@@ -685,14 +689,14 @@ pub fn import(
             ));
             continue;
         }
-        client_libraries.push(import_copy(
-            &source,
-            &destination,
-            sha1,
-            "sha1",
-            &files.hint(&lock.version),
-        )?);
+        imports.push((source, destination, sha1));
     }
+    let hint = files.hint(&lock.version);
+    let client_libraries = crate::pool::map(
+        &imports,
+        || Ok(()),
+        |_, (source, destination, sha1)| import_copy(source, destination, sha1, "sha1", &hint),
+    )?;
     write_import_metadata(
         root,
         lock,
@@ -713,8 +717,13 @@ fn write_import_metadata(
     server_libraries: &[PathBuf],
     log: Log,
 ) -> Result<(), String> {
-    for (side, jar) in [("client", client), ("server", server)] {
-        let data = crate::inventory::inventory(jar)?;
+    let sides = [("client", client), ("server", server)];
+    let inventories = crate::pool::map(
+        &sides,
+        || Ok(()),
+        |_, (_, jar)| crate::inventory::inventory(jar),
+    )?;
+    for ((side, _), data) in sides.into_iter().zip(inventories) {
         let count = |key| data.get(key).cloned().unwrap_or(Value::Null);
         write_json(
             &lock
@@ -884,17 +893,25 @@ pub fn verify(lock: &Lock) -> Result<Artifacts, String> {
         return Err("Manifest version differs from the lock".into());
     }
     let mut jars = HashMap::new();
-    for side in ["client", "server"] {
-        let jar = lock.directory.join(format!("jars/{side}.jar"));
-        let pinned = manifest
-            .get("downloads")
-            .and_then(|d| d.get(side))
-            .and_then(|d| d.get("sha1"))
-            .and_then(Value::as_str);
-        if pinned != Some(lock.pin(&format!("{side}_sha1"))?)
-            || !jar.exists()
-            || Some(digest(&jar, "sha1")?.as_str()) != pinned
-        {
+    let sides = ["client", "server"];
+    let checked = crate::pool::map(
+        &sides,
+        || Ok(()),
+        |_, side| {
+            let jar = lock.directory.join(format!("jars/{side}.jar"));
+            let pinned = manifest
+                .get("downloads")
+                .and_then(|d| d.get(side))
+                .and_then(|d| d.get("sha1"))
+                .and_then(Value::as_str);
+            let good = pinned == Some(lock.pin(&format!("{side}_sha1"))?)
+                && jar.exists()
+                && Some(digest(&jar, "sha1")?.as_str()) == pinned;
+            Ok((good, jar))
+        },
+    )?;
+    for (side, (good, jar)) in sides.into_iter().zip(checked) {
+        if !good {
             return Err(format!(
                 "{side} artifact checksum changed; prepare again with --prepare"
             ));
@@ -911,14 +928,18 @@ pub fn verify(lock: &Lock) -> Result<Artifacts, String> {
         return Err("Inner server artifact checksum changed".into());
     }
     jars.insert("server", game);
-    let mut libraries = Vec::new();
-    for (checksum, _, path, relative) in bundle_entries(&mut archive, "META-INF/libraries.list")? {
-        let library = lock.directory.join("libraries/server").join(path);
-        if !library.exists() || digest(&library, "sha256")? != checksum {
-            return Err(format!("Dependency checksum changed: {relative}"));
-        }
-        libraries.push(library);
-    }
+    let entries = bundle_entries(&mut archive, "META-INF/libraries.list")?;
+    let libraries = crate::pool::map(
+        &entries,
+        || Ok(()),
+        |_, (checksum, _, path, relative)| {
+            let library = lock.directory.join("libraries/server").join(path);
+            if !library.exists() || digest(&library, "sha256")? != *checksum {
+                return Err(format!("Dependency checksum changed: {relative}"));
+            }
+            Ok(library)
+        },
+    )?;
     Ok(Artifacts {
         manifest,
         jars,
@@ -930,20 +951,24 @@ pub fn verify(lock: &Lock) -> Result<Artifacts, String> {
 /// `client_libraries`); the client-side exporters compile against them. A native transport the
 /// player's launcher did not have is left out.
 pub fn client_libraries(lock: &Lock, manifest: &Value) -> Result<Vec<PathBuf>, String> {
-    let mut libraries = Vec::new();
-    for (name, artifact) in client_library_artifacts(manifest)? {
-        let (path, sha1) = artifact_fields(artifact)?;
-        let relative = safe_relative(path).ok_or("Unsafe client library path")?;
-        let library = lock.directory.join("libraries/client").join(&relative);
-        if runs_without(name) && !library.exists() {
-            continue;
-        }
-        if !library.exists() || digest(&library, "sha1")? != sha1 {
-            return Err(format!("Client dependency checksum changed: {path}"));
-        }
-        libraries.push(library);
-    }
-    Ok(libraries)
+    let artifacts = client_library_artifacts(manifest)?;
+    let libraries = crate::pool::map(
+        &artifacts,
+        || Ok(()),
+        |_, (name, artifact)| {
+            let (path, sha1) = artifact_fields(artifact)?;
+            let relative = safe_relative(path).ok_or("Unsafe client library path")?;
+            let library = lock.directory.join("libraries/client").join(&relative);
+            if runs_without(name) && !library.exists() {
+                return Ok(None);
+            }
+            if !library.exists() || digest(&library, "sha1")? != sha1 {
+                return Err(format!("Client dependency checksum changed: {path}"));
+            }
+            Ok(Some(library))
+        },
+    )?;
+    Ok(libraries.into_iter().flatten().collect())
 }
 
 #[cfg(test)]

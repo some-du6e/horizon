@@ -40,6 +40,21 @@ Fresh release preparation therefore starts five exporter/data-generator JVMs, do
 and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1` retains separate exporter JVMs for
 output comparisons and diagnosis.
 
+Those JVMs run on four lanes at once, so at most three run at a time: the server worker's
+steps in their fixed order; the client worker's, then the command registries'; the data
+generator, then the creative tabs'; and the Rust-only copying (client assets and data, the
+world generator's bundle), spread over several threads. The world generator's tables, which
+need the block facts and the reports, and the manifest come after all four. A worker stops
+when its lane is done. The two sides compile at once too. Imports and checks hash the pinned
+files on several threads; every file is still checked in full. `HORIZON_PREPARE_JOBS=1` runs
+it all one step after another (for a machine short on memory).
+
+A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
+sources, its jar and its outputs. Most of those are in `horizon-resources.json`; the block
+behaviour and structure-block exporters keep a `stamp.json` beside their working files in
+`.local/` (the exporter bundle's key, the server jar, this preparer's sources, and the
+outputs' sha256), so the prepared files stay the same.
+
 `tools/check_prepare_exporters.py` requires identical resource file sets and identical bytes
 for every file stable across the two isolated runs. For the three known noisy JSON files,
 it also requires semantic equality after normalizing object key order, opaque JVM lambda
