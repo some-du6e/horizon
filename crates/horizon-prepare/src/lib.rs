@@ -219,15 +219,58 @@ pub(crate) fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
-pub(crate) fn open_zip(path: &Path) -> Result<zip::ZipArchive<fs::File>, String> {
+/// An open jar. Its clones share the parsed member list (the client jar's is ~10 MB) and read
+/// at their own offsets, so the threads reading one jar each take a clone, not a new parse.
+pub(crate) type Jar = zip::ZipArchive<JarFile>;
+
+pub(crate) fn open_zip(path: &Path) -> Result<Jar, String> {
     let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .len();
+    let file = JarFile {
+        file: std::sync::Arc::new(file),
+        position: 0,
+        len,
+    };
     zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub(crate) fn zip_bytes(
-    archive: &mut zip::ZipArchive<fs::File>,
-    name: &str,
-) -> Result<Vec<u8>, String> {
+/// A file read with positioned reads: clones share the handle but not the position.
+#[derive(Clone)]
+pub(crate) struct JarFile {
+    file: std::sync::Arc<fs::File>,
+    position: u64,
+    len: u64,
+}
+
+impl Read for JarFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(&*self.file, buf, self.position)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(&*self.file, buf, self.position)?;
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for JarFile {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let (base, offset) = match to {
+            std::io::SeekFrom::Start(n) => (n, 0),
+            std::io::SeekFrom::End(n) => (self.len, n),
+            std::io::SeekFrom::Current(n) => (self.position, n),
+        };
+        self.position = base.checked_add_signed(offset).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start")
+        })?;
+        Ok(self.position)
+    }
+}
+
+pub(crate) fn zip_bytes(archive: &mut Jar, name: &str) -> Result<Vec<u8>, String> {
     let mut entry = archive.by_name(name).map_err(|e| format!("{name}: {e}"))?;
     let mut data = Vec::with_capacity(entry.size() as usize);
     entry
@@ -236,15 +279,12 @@ pub(crate) fn zip_bytes(
     Ok(data)
 }
 
-pub(crate) fn zip_text(
-    archive: &mut zip::ZipArchive<fs::File>,
-    name: &str,
-) -> Result<String, String> {
+pub(crate) fn zip_text(archive: &mut Jar, name: &str) -> Result<String, String> {
     String::from_utf8(zip_bytes(archive, name)?).map_err(|e| format!("{name}: {e}"))
 }
 
 /// The archive's member names in its own order (Python's `namelist`).
-fn zip_names(archive: &zip::ZipArchive<fs::File>) -> Vec<String> {
+fn zip_names(archive: &Jar) -> Vec<String> {
     (0..archive.len())
         .filter_map(|i| archive.name_for_index(i).map(str::to_string))
         .collect()
@@ -252,7 +292,7 @@ fn zip_names(archive: &zip::ZipArchive<fs::File>) -> Vec<String> {
 
 /// `{"minecraft:<path>": text}` for every `<prefix><path>.json`, sorted by member name
 /// (the comprehension the Python preparer used for tags, worldgen and damage resources).
-fn json_resources(archive: &mut zip::ZipArchive<fs::File>, prefix: &str) -> Result<Value, String> {
+fn json_resources(archive: &mut Jar, prefix: &str) -> Result<Value, String> {
     let mut names: Vec<String> = zip_names(archive)
         .into_iter()
         .filter(|n| n.starts_with(prefix) && n.ends_with(".json"))
@@ -1104,10 +1144,9 @@ fn extract_client_resources(
         });
         groups[group].push((name, target));
     }
-    drop(client);
     pool::map(
         &groups,
-        || open_zip(jar),
+        || Ok(client.clone()),
         |client, group| {
             for (name, target) in group {
                 extract_member(client, name, target)?;
@@ -1119,11 +1158,7 @@ fn extract_client_resources(
 }
 
 /// Writes one member unless its file already has the member's size and CRC.
-fn extract_member(
-    client: &mut zip::ZipArchive<fs::File>,
-    name: &str,
-    target: &Path,
-) -> Result<(), String> {
+fn extract_member(client: &mut Jar, name: &str, target: &Path) -> Result<(), String> {
     let member = client.by_name(name).map_err(|e| e.to_string())?;
     let (size, crc) = (member.size(), member.crc32());
     drop(member);
@@ -1232,7 +1267,8 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     mkdir(&out)?;
     // Structure templates: gzip NBT files under structure/<namespace>/<path>.nbt.
     let prefix = "data/minecraft/structure/";
-    let templates: Vec<String> = zip_names(&open_zip(&run.server)?)
+    let (server, client) = (open_zip(&run.server)?, open_zip(&run.client)?);
+    let templates: Vec<String> = zip_names(&server)
         .into_iter()
         .filter(|name| name.starts_with(prefix) && name.ends_with(".nbt"))
         .collect();
@@ -1244,7 +1280,7 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
         .collect();
     pool::map(
         &templates,
-        || open_zip(&run.server),
+        || Ok(server.clone()),
         |server, name| {
             let relative = member_path(&name[prefix.len()..], "Invalid structure path")?;
             let data = zip_bytes(server, name)?;
@@ -1253,7 +1289,7 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     )?;
     pool::map(
         &WORLDGEN_BUNDLES,
-        || Ok((open_zip(&run.server)?, open_zip(&run.client)?)),
+        || Ok((server.clone(), client.clone())),
         |(server, client), (name, path)| {
             let prefix = format!("data/minecraft/{path}/");
             let resources = json_resources(server, &prefix)?;
@@ -1634,6 +1670,45 @@ mod tests {
         );
         check();
         assert_eq!(fs::metadata(&kept).unwrap().modified().unwrap(), before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clones_of_a_jar_read_on_their_own() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("horizon-prepare-jar-{}", std::process::id()));
+        mkdir(&dir).unwrap();
+        let path = dir.join("a.jar");
+        let mut archive = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let members: Vec<(String, Vec<u8>)> = (0..3u8)
+            .map(|i| {
+                (
+                    format!("{i}.bin"),
+                    (0..200_000u32).map(|n| (n % 251) as u8 ^ i).collect(),
+                )
+            })
+            .collect();
+        for (name, data) in &members {
+            archive
+                .start_file(name.as_str(), zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(data).unwrap();
+        }
+        archive.finish().unwrap();
+        let mut first = open_zip(&path).unwrap();
+        let mut second = first.clone();
+        // Halfway through one member, the other clone reads a whole one.
+        let mut entry = first.by_name("0.bin").unwrap();
+        let mut start = vec![0; 1000];
+        entry.read_exact(&mut start).unwrap();
+        assert_eq!(zip_bytes(&mut second, "2.bin").unwrap(), members[2].1);
+        let mut rest = Vec::new();
+        entry.read_to_end(&mut rest).unwrap();
+        start.extend(rest);
+        assert_eq!(start, members[0].1);
+        drop(entry);
+        assert_eq!(zip_bytes(&mut first, "1.bin").unwrap(), members[1].1);
+        assert_eq!(zip_names(&second), ["0.bin", "1.bin", "2.bin"]);
         fs::remove_dir_all(dir).unwrap();
     }
 
