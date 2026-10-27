@@ -398,18 +398,32 @@ impl HandWorld for GameHands<'_, '_> {
         self.game.creative
     }
     fn cannot_attack(&mut self) -> bool {
-        false
+        self.game
+            .cannot_attack_with_held(self.game.hand_strength.ticker, 0)
     }
     fn piercing_weapon(&mut self) -> bool {
-        false
+        self.game.held_piercing_weapon().is_some()
     }
     fn attack_animation(&mut self) -> SwingAnimation {
-        SwingAnimation::DEFAULT
+        self.game.held_attack_animation()
     }
     fn interact_animation(&mut self, _: Hand) -> SwingAnimation {
         SwingAnimation::DEFAULT
     }
-    fn piercing_attack(&mut self, _: SwingAnimation) {}
+    /// In frame this world is the server too: its STAB handling (with the
+    /// server's tolerance), then the client's half.
+    fn piercing_attack(&mut self, _: SwingAnimation) {
+        let Some(weapon) = self.game.held_piercing_weapon() else {
+            return;
+        };
+        if !self
+            .game
+            .cannot_attack_with_held(self.game.attack_ticks as i32, 5)
+        {
+            self.game.piercing_weapon_attack(&weapon);
+        }
+        self.game.local_piercing_attack(&weapon);
+    }
     fn attack_entity(&mut self) -> bool {
         self.game.attack()
     }

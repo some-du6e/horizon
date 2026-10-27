@@ -164,6 +164,7 @@ mod shield;
 mod sign_edit;
 mod sniffers;
 mod spawner;
+mod spear;
 mod spill;
 mod startup_menu;
 mod station_control;
