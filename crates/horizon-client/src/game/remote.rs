@@ -4127,7 +4127,7 @@ impl Game<'_> {
                 // door, a lever, a chest. A vanilla server swings the hand for
                 // the others only; CONSUME (a pressed button) swings nothing.
                 if result == InteractionResult::Success {
-                    self.with_hand(hand, Game::swing_arm);
+                    self.remote_use_swing(hand, held.as_ref());
                 }
             } else if let Some(stack) = held.as_ref()
                 && self.predict_item_on_block(stack, &hit)
@@ -4135,7 +4135,7 @@ impl Game<'_> {
                 // Item.useOn succeeded here (InteractionResult.SUCCESS):
                 // this hand swings and the click ends, so the other hand
                 // (a shield, a torch) is never tried.
-                self.with_hand(hand, Game::swing_arm);
+                self.remote_use_swing(hand, held.as_ref());
                 return true;
             }
             if held_block {
@@ -4154,7 +4154,7 @@ impl Game<'_> {
                     r.placing = None;
                 }
                 if placed.is_some() {
-                    self.with_hand(hand, Game::swing_arm);
+                    self.remote_use_swing(hand, held.as_ref());
                 }
                 // BlockItem.place returns FAIL when placement is rejected:
                 // stop this click without trying the item or the other hand.
@@ -4163,6 +4163,20 @@ impl Game<'_> {
             return reacts;
         }
         false
+    }
+
+    /// Minecraft.startUseItem after a use on a block that swings: the hand
+    /// swings, and `itemUsed` drops the held item and raises it again when
+    /// the use changed its count or the player has infinite materials
+    /// (opening a chest in creative with something in hand).
+    fn remote_use_swing(&mut self, hand: Hand, before: Option<&ItemStack>) {
+        self.with_hand(hand, Game::swing_arm);
+        let after = self.with_hand(hand, |g| g.held().map(|s| s.count));
+        if let (Some(before), Some(after)) = (before, after)
+            && (after != before.count || self.creative)
+        {
+            self.heights.item_used(hand);
+        }
     }
 
     /// `Item.useOn` on this client's level for the items whose effects are
