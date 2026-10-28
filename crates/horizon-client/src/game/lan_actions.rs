@@ -294,6 +294,11 @@ impl Game<'_> {
         motion.flying = g.flying;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
+        motion.known_movement = Some(Vec3::new(
+            g.known_movement[0],
+            g.known_movement[1],
+            g.known_movement[2],
+        ));
         motion.invulnerable = motion.may_fly;
         let _ = motion.set_health(g.health, false);
         motion.health.food.food = g.food;
@@ -1099,14 +1104,25 @@ impl Game<'_> {
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
-                let swung = self.as_guest(host, conn, |g| {
+                let used = self.as_guest(host, conn, |g| {
                     g.guest_use = Some(GuestUse::Item(hand));
                     let swings = g.swings_started;
+                    let before = g.using.is_some();
                     let _ = g.use_item();
                     g.guest_use = None;
-                    g.swings_started != swings
+                    let spear = if before {
+                        None
+                    } else {
+                        g.guest_spear_use_sound()
+                    };
+                    (g.swings_started != swings, spear)
                 });
-                self.lan_swing_back(host, conn, swung);
+                // KineticWeapon.makeSound: for the players around the guest.
+                if let Some((_, Some((sound, at)))) = &used {
+                    let source = horizon_client::settings::sound_source(sound) as i32;
+                    host.hub.sound(sound, *at, 1.0, 1.0, source, Some(conn));
+                }
+                self.lan_swing_back(host, conn, used.map(|(swung, _)| swung));
             }
             S::Attack(p) => self.guest_attack(host, conn, p.id),
             S::Interact(p) => {
@@ -1940,7 +1956,7 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
-                self.as_guest(host, conn, |g| {
+                let hit = self.as_guest(host, conn, |g| {
                     g.attack_ticks = g.attack_ticks.saturating_add(1);
                     if let Some((pos, face)) = digging {
                         g.forced_hit = Some(Hit {
@@ -1960,7 +1976,13 @@ impl Game<'_> {
                     if g.use_delay > 0 {
                         g.use_delay -= 1;
                     }
+                    std::mem::take(&mut g.kinetic_hit)
                 });
+                // Level.broadcastEntityEvent(2): the guest's charge hit something.
+                if hit == Some(true) {
+                    let g = &host.hub.guests[gi];
+                    host.hub.entity_event(g.entity_id, 2, g.position);
+                }
                 // ServerPlayerGameMode.handleBlockBreakAction: creative and
                 // instant survival STARTs finish without a STOP from the client.
                 // tick_mining clears mining on completion; forget the START too,
@@ -2849,7 +2871,7 @@ impl Game<'_> {
                 let packet = swing_packet(id, c.hand, c.animation);
                 host.hub.broadcast_near(at, 128.0, &packet, Some(conn));
                 if let Some(m) = host.models.get_mut(&conn) {
-                    m.swing();
+                    m.swing_arm_with(c.hand == Hand::Main, c.animation);
                 }
             }
             play.swing.tick();

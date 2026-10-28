@@ -1672,6 +1672,8 @@ struct Game<'a> {
     /// `ContainerOpenersCounter`: how many players (the host and the guests)
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
+    /// The acting player's spear charge hit something this tick (game/spear.rs).
+    kinetic_hit: bool,
     lan_acting: Option<u32>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
@@ -3831,6 +3833,10 @@ impl Game<'_> {
             }
             return Ok(true);
         }
+        // KineticWeapon: a spear starts charging (game/spear.rs).
+        if !on_block && self.start_spear_use(&stack) {
+            return Ok(true);
+        }
         // Block foods attempt placement before starting consumption.
         if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_eating(&info) {
             return Ok(true);
@@ -4065,6 +4071,13 @@ impl Game<'_> {
         if info.blocks_attacks.is_some() {
             // ShieldItem: used for 72000 ticks, i.e. until released.
             self.using = Some((slot, ticks + 1));
+            return;
+        }
+        // A kinetic weapon (spears) is held until released, its charge
+        // hitting what it meets (ItemStack.onUseTick).
+        if let Some(k) = info.kinetic_weapon {
+            self.using = Some((slot, ticks + 1));
+            self.kinetic_use_tick(k, ticks);
             return;
         }
         if self.tick_drinking(slot, ticks, &stack) {
@@ -4744,6 +4757,17 @@ impl Game<'_> {
         self.shield_cooldown = self.shield_cooldown.saturating_sub(1);
         self.cooldowns.tick();
         horizon_client::spans::time("tick_using", || self.tick_using());
+        // Level.broadcastEntityEvent(2) for the window's own charge hit.
+        if std::mem::take(&mut self.kinetic_hit) {
+            self.local_kinetic_hit();
+            if let (Some(id), Some(p)) = (
+                self.lan.as_ref().map(|l| l.host_entity),
+                self.player.as_ref(),
+            ) {
+                let at = p.position.components();
+                self.lan_entity_event(id, 2, at);
+            }
+        }
         horizon_client::spans::time("tick_hud", || self.tick_hud());
         // The player's digging comes in with its packets, before the level
         // ticks; ServerLevel.tick then runs the scheduled and random block
@@ -9774,7 +9798,28 @@ impl Game<'_> {
             let ticks_used =
                 owner.use_duration as f32 - (owner.use_item_remaining_ticks as f32 - a + 1.0);
             use horizon_client::first_person::ItemPose;
+            let kinetic = self
+                .res
+                .items()
+                .get(&stack.item)
+                .and_then(|i| i.kinetic_weapon);
+            // A swing of this hand with SwingAnimationType.STAB.
+            let stab = self
+                .swing
+                .current
+                .is_some_and(|c| c.hand == hand && c.animation.kind == 2);
             let pose = match &*stack.item {
+                _ if using && kinetic.is_some() => ItemPose::Spear {
+                    ticks_used,
+                    kinetic: kinetic.unwrap_or_default(),
+                    since_hit: self.player_model.as_ref().map_or(0.0, |m| {
+                        horizon_client::spear_anim::ticks_since_hit(
+                            m.extra.kinetic_hit_age,
+                            m.age,
+                            a,
+                        )
+                    }),
+                },
                 "minecraft:bow" if using => ItemPose::Bow { ticks_used },
                 "minecraft:crossbow" => {
                     let charged = stack.data().is_some_and(|d| !d.charged.is_empty());
@@ -9812,6 +9857,7 @@ impl Game<'_> {
                     }
                 }
                 _ if spinning => ItemPose::SpinAttack,
+                _ if stab => ItemPose::Stab,
                 _ => ItemPose::Swing,
             };
             let m = to_world
@@ -12955,6 +13001,7 @@ impl<'a> Game<'a> {
             lan_critical_hits: Vec::new(),
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
+            kinetic_hit: false,
             lan_acting: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),

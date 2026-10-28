@@ -5,6 +5,11 @@
 //! (`MultiPlayerGameMode.piercingAttack`); the server jabs and lunges
 //! (`ServerGamePacketListenerImpl.handlePlayerAction`) and sends the lunge's
 //! motion to the player, whose client moves with it.
+//!
+//! Holding use charges the spear (`kinetic_weapon`): each tick of the use,
+//! the mobs along its reach are hit by how fast the player moves at them
+//! (`KineticWeapon.damageEntities`), and a hit kicks the spear in the hand
+//! (entity event 2, `LivingEntity.onKineticHit`).
 use super::{Game, lan::LanHost, ray_box, view_vector};
 use horizon_client::{
     first_person::{Hand, SwingAnimation},
@@ -126,7 +131,13 @@ impl Game<'_> {
         let scale = self.attack_strength_scale();
         let mut hit = Vec::new();
         for index in self.mobs_along_attack_range() {
-            if self.stab_mob(index, damage, scale, weapon) {
+            if self.stab_mob(
+                index,
+                self.selected,
+                damage,
+                scale,
+                [true, weapon.deals_knockback, weapon.dismounts],
+            ) {
                 hit.push(self.mobs[index].id);
             }
         }
@@ -138,8 +149,40 @@ impl Game<'_> {
         {
             self.audio.play(sound, at, 1.0, 1.0);
         }
-        self.swing_hand(Hand::Main, self.held_attack_animation());
+        // `swing(MAIN_HAND)`: a server's player's, for the players around;
+        // the window's own player swings once, as its client.
+        if self.lan_acting.is_some() {
+            self.swing_hand(Hand::Main, self.held_attack_animation());
+        }
         (hit, motion)
+    }
+    /// The player's movement over the last tick: a ridden mob's (a passenger
+    /// takes its vehicle's), else what its client last reported for a
+    /// server's player (`lastKnownClientMovement`), else `local` of the
+    /// window's own player.
+    fn reported_movement(
+        &self,
+        local: impl Fn(&horizon_client::motion::PlayerMotion) -> Vec3,
+    ) -> Vec3 {
+        if let Some(m) = self
+            .riding
+            .and_then(|v| self.mobs.iter().find(|m| m.id == v))
+        {
+            return m.position.subtract(m.previous);
+        }
+        self.player
+            .as_ref()
+            .map_or(Vec3::ZERO, |p| p.known_movement.unwrap_or_else(|| local(p)))
+    }
+    /// `Player.getKnownMovement`: the window's own player's motion
+    /// (`Entity.getDeltaMovement`).
+    fn known_movement(&self) -> Vec3 {
+        self.reported_movement(|p| p.velocity)
+    }
+    /// `Player.getKnownSpeed`: the window's own player's move this tick
+    /// (`Entity.computeSpeed`).
+    fn known_speed(&self) -> Vec3 {
+        self.reported_movement(|p| p.position.subtract(p.old_position))
     }
     /// `ProjectileUtil.getHitEntitiesAlong` over the mobs for the main hand's
     /// attack range: the look's segment from the minimum reach to the
@@ -147,7 +190,7 @@ impl Game<'_> {
     /// first block. A mob is hit when the segment passes through its box, or
     /// through the box grown by the range's hitbox margin.
     fn mobs_along_attack_range(&self) -> Vec<usize> {
-        let (Some(eye), Some(p)) = (self.eye_position(), self.player.as_ref()) else {
+        let Some(eye) = self.eye_position() else {
             return Vec::new();
         };
         let range = self.inventory[self.selected]
@@ -166,7 +209,8 @@ impl Game<'_> {
         };
         let margin = f64::from(value("hitbox_margin", 0.3));
         let look = view_vector(self.yaw, self.pitch);
-        let along = p.velocity.x * look[0] + p.velocity.y * look[1] + p.velocity.z * look[2];
+        let moved = self.known_movement();
+        let along = moved.x * look[0] + moved.y * look[1] + moved.z * look[2];
         let (start, mut end) = (f64::from(min), f64::from(max) + along.max(0.0));
         if let Some(block) = self.clip_ray(eye, look, end) {
             end = (0..3)
@@ -198,19 +242,33 @@ impl Game<'_> {
             .map(|(i, _)| i)
             .collect()
     }
-    /// `Player.stabAttack` on the mob at `index` with `base` attack damage:
-    /// the enchantments' bonus and the damage, scaled by the attack strength
-    /// unless the jab comes from the hand charging the spear, then a 0.4
-    /// knockback and the weapon's own (Knockback), and the rest of a landed
-    /// hit. Whether the mob was affected.
-    fn stab_mob(&mut self, index: usize, base: f32, scale: f32, weapon: &PiercingWeapon) -> bool {
+    /// `Player.stabAttack` on the mob at `index` with `base` attack damage
+    /// and what it `[deals damage, deals knockback, dismounts]`: the
+    /// enchantments' bonus and the damage, scaled by the attack strength
+    /// unless the stab comes from the hand charging the spear, then a 0.4
+    /// knockback and the weapon's own (Knockback), the rider taken off its
+    /// mount, and the rest of a landed hit. Whether the mob was affected.
+    ///
+    /// `slot` holds the weapon (the main hand's, or `OFFHAND_SLOT` for an
+    /// off-hand charge). The enchanted damage and the knockback read the
+    /// main hand still (`getWeaponItem`); the damage source and the item's
+    /// hit (`itemAttackInteraction`) are the slot's.
+    fn stab_mob(
+        &mut self,
+        index: usize,
+        slot: usize,
+        base: f32,
+        scale: f32,
+        deals: [bool; 3],
+    ) -> bool {
+        let [deals_damage, deals_knockback, dismounts] = deals;
         let kind = format!(
             "minecraft:{}",
             self.mobs[index].kind.id.trim_start_matches("minecraft:")
         );
         let mut magic = self.enchant_damage_bonus(&kind);
         let mut base = base;
-        if self.using.is_none_or(|(slot, _)| slot != self.selected) {
+        if self.using.is_none_or(|(used, _)| used != slot) {
             magic *= scale;
             base *= 0.2 + scale * scale * 0.8;
         }
@@ -219,8 +277,12 @@ impl Game<'_> {
         };
         let old_health = self.mobs[index].health;
         let source = self.attack_source(from);
-        let hurt = self.hurt_by_player(index, base + magic, source);
-        if weapon.deals_knockback {
+        let off_hand = slot == super::shield::OFFHAND_SLOT;
+        let hurt = deals_damage
+            && self.with_weapon_in_main_hand(off_hand, |g| {
+                g.hurt_by_player(index, base + magic, source)
+            });
+        if deals_knockback {
             // causeExtraKnockback(0.4), then causeExtraKnockback(getKnockback).
             let (xd, zd) = self.extra_knockback_direction();
             self.mobs[index].knockback(0.4, xd, zd);
@@ -230,13 +292,29 @@ impl Game<'_> {
             }
             self.stop_sprint_after_extra_knockback();
         }
-        if !hurt && !weapon.deals_knockback {
+        // Entity.stopRiding, unless the mob's type keeps its seat.
+        let mob = &self.mobs[index];
+        let dismounted = dismounts
+            && mob.extra.mount.is_some()
+            && !self
+                .res
+                .stations()
+                .enchantments
+                .entity_tags
+                .get("minecraft:cannot_be_dismounted_by_item_usage")
+                .is_some_and(|tag| tag.contains(&*mob.kind.id));
+        if dismounted {
+            let m = &mut self.mobs[index];
+            m.extra.mount = None;
+            m.extra.passenger = false;
+        }
+        if !hurt && !deals_knockback && !dismounted {
             return false;
         }
         // LivingEntity.setLastHurtMob (tamed wolves join in).
         self.combat.last_hurt_mob = Some((self.mobs[index].id, self.world.game_time));
         if hurt {
-            self.weapon_hit(index);
+            self.with_weapon_in_main_hand(off_hand, |g| g.weapon_hit(index));
         }
         // Player.damageStatsAndHearts.
         let mob = &self.mobs[index];
@@ -273,6 +351,169 @@ impl Game<'_> {
             }
         }
         true
+    }
+    /// `f` with the off hand's stack where the main hand's is, when
+    /// `off_hand`: the code that reads the weapon from the main hand then
+    /// reads (and wears, or breaks) the off hand's.
+    fn with_weapon_in_main_hand<R>(&mut self, off_hand: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !off_hand {
+            return f(self);
+        }
+        let selected = self.selected;
+        std::mem::swap(&mut self.inventory[selected], &mut self.offhand);
+        let result = f(self);
+        std::mem::swap(&mut self.inventory[selected], &mut self.offhand);
+        result
+    }
+    /// `Item.use` for a kinetic weapon in the acting hand: `startUsingItem`
+    /// (a new `recentKineticEnemies`) and `KineticWeapon.makeSound`, which a
+    /// server's guest plays itself (`guest_spear_use_sound`). Whether the
+    /// stack is one.
+    pub(super) fn start_spear_use(&mut self, stack: &horizon_client::items::ItemStack) -> bool {
+        let Some(info) = self.res.items().get(&stack.item) else {
+            return false;
+        };
+        if info.kinetic_weapon.is_none() {
+            return false;
+        }
+        let sound = info.kinetic_sound.clone();
+        if self.using.is_none() {
+            self.using = Some((self.held_slot(), 0));
+            let who = self.lan_acting;
+            for m in &mut self.mobs {
+                m.extra.stabbed_by.retain(|(by, _)| *by != who);
+            }
+            if self.guest_use.is_none()
+                && let Some(sound) = sound
+            {
+                let at = self.player.as_ref().map(|p| p.position.components());
+                self.audio.play(&sound, at, 1.0, 1.0);
+            }
+        }
+        true
+    }
+    /// The sound of the kinetic weapon a guest just started using, and where
+    /// (`playSound(player, ...)`: the others hear it, the guest plays its own).
+    pub(super) fn guest_spear_use_sound(&self) -> Option<(String, [f64; 3])> {
+        let (slot, ticks) = self.using?;
+        if ticks != 0 {
+            return None;
+        }
+        let stack = self.stack_in(slot)?;
+        let sound = self.res.items().get(&stack.item)?.kinetic_sound.clone()?;
+        Some((sound, self.player.as_ref()?.position.components()))
+    }
+    /// `KineticWeapon.damageEntities`, `ticks_used` ticks into the use of a
+    /// kinetic weapon `k` in the acting hand: past its delay, every mob along
+    /// the reach not hit within the contact cooldown is stabbed by the
+    /// conditions the player's and its speeds along the look meet, for the
+    /// base attack damage plus the relative speed times the multiplier.
+    pub(super) fn kinetic_use_tick(
+        &mut self,
+        k: horizon_client::spear_anim::KineticTimings,
+        ticks_used: u32,
+    ) {
+        let used = ticks_used as i32 - k.delay_ticks;
+        if used < 0 {
+            return;
+        }
+        if self.player.is_none() {
+            return;
+        }
+        // KineticWeapon.getMotion: the known speed, per second.
+        let look = view_vector(self.yaw, self.pitch);
+        let along = |v: Vec3| (v.x * look[0] + v.y * look[1] + v.z * look[2]) * 20.0;
+        let speed = along(self.known_speed());
+        // The charging hand's slot (the stab's EquipmentSlot).
+        let slot = self.using.map_or(self.selected, |(slot, _)| slot);
+        let (now, who) = (self.world.game_time, self.lan_acting);
+        let mut affected = false;
+        for index in self.mobs_along_attack_range() {
+            let m = &mut self.mobs[index];
+            let cooldown = i64::from(k.contact_cooldown_ticks);
+            if m.extra
+                .stabbed_by
+                .iter()
+                .any(|&(by, at)| by == who && now - at < cooldown)
+            {
+                continue;
+            }
+            // LivingEntity.rememberStabbedEntity.
+            m.extra.stabbed_by.retain(|(by, _)| *by != who);
+            m.extra.stabbed_by.push((who, now));
+            let relative = (speed - along(m.position.subtract(m.previous))).max(0.0);
+            let deals = k
+                .conditions
+                .map(|c| c.is_some_and(|c| c.test(used, speed, relative, 1.0)));
+            if deals.iter().any(|&d| d) {
+                // getAttributeBaseValue(ATTACK_DAMAGE): 1 for a player.
+                let damage = 1.0 + (relative * f64::from(k.damage_multiplier)).floor() as f32;
+                let [dismount, knockback, damages] = deals;
+                let deals = [damages, knockback, dismount];
+                affected |= self.stab_mob(index, slot, damage, 1.0, deals);
+            }
+        }
+        if affected {
+            self.kinetic_hit = true;
+        }
+    }
+    /// `LivingEntity.onKineticHit` for `m` (entity event 2): at most every 10
+    /// ticks, the spear in use kicks. Whether it did.
+    fn kinetic_feedback(m: &mut horizon_client::mobs::Mob) -> bool {
+        if m.extra
+            .kinetic_hit_age
+            .is_some_and(|hit| m.age.wrapping_sub(hit) <= 10)
+        {
+            return false;
+        }
+        m.extra.kinetic_hit_age = Some(m.age);
+        true
+    }
+    /// `KineticWeapon.makeLocalHitSound` for the kinetic weapon `item` used
+    /// at `at`.
+    fn kinetic_hit_sound(&mut self, item: Option<&str>, at: [f64; 3]) {
+        let sound = item
+            .and_then(|i| self.res.items().get(i))
+            .and_then(|i| i.kinetic_hit_sound.clone());
+        if let Some(sound) = sound {
+            self.audio.play_unshared(&sound, Some(at), 1.0, 1.0);
+        }
+    }
+    /// The window's own player's charge hit something (`onKineticHit`): its
+    /// spear kicks and it hears the hit.
+    pub(super) fn local_kinetic_hit(&mut self) {
+        let fed = self
+            .player_model
+            .as_mut()
+            .is_some_and(Self::kinetic_feedback);
+        let item = self
+            .using
+            .and_then(|(slot, _)| self.stack_in(slot))
+            .map(|s| s.item.clone());
+        if fed && let Some(at) = self.player.as_ref().map(|p| p.position.components()) {
+            self.kinetic_hit_sound(item.as_deref(), at);
+        }
+    }
+    /// ClientPacketListener.handleEntityEvent 2 on a server's client: this
+    /// player's or another entity's charge hit something.
+    pub(super) fn remote_kinetic_hit(&mut self, id: i32) {
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
+            self.local_kinetic_hit();
+            return;
+        }
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32) else {
+            return;
+        };
+        if !Self::kinetic_feedback(m) || m.extra.using_item == 0 {
+            return;
+        }
+        let item = if m.extra.using_off_hand {
+            m.extra.off_hand.clone()
+        } else {
+            m.extra.main_hand.clone()
+        };
+        let at = m.position.components();
+        self.kinetic_hit_sound(item.as_deref(), at);
     }
     /// `EnchantmentHelper.doPostPiercingAttackEffects` for Lunge, the one
     /// enchantment with `post_piercing_attack` effects. Off a vehicle, not

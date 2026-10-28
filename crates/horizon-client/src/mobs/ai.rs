@@ -53,15 +53,48 @@ pub struct Ai {
     /// Swing animation progress (attackAnim) and ticks.
     pub swing_time: i32,
     pub swinging: bool,
+    /// The current swing's duration in ticks (0: the default 6).
+    pub swing_duration: i32,
     /// Walked distance and the next footstep.
     pub steps: super::living::Steps,
 }
 impl Mob {
     /// LivingEntity.swing
     pub fn swing(&mut self) {
-        if !self.ai.swinging || self.ai.swing_time >= 3 || self.ai.swing_time < 0 {
+        self.swing_with(crate::first_person::SwingAnimation::DEFAULT);
+    }
+    /// `LivingEntity.swing` with a `SwingAnimation`: a swing in its first
+    /// half keeps going, otherwise this one starts with its own duration.
+    /// Whether it started.
+    pub fn swing_with(&mut self, animation: crate::first_person::SwingAnimation) -> bool {
+        let half = self.swing_ticks() / 2;
+        if !self.ai.swinging || self.ai.swing_time >= half || self.ai.swing_time < 0 {
             self.ai.swing_time = -1;
             self.ai.swinging = true;
+            self.ai.swing_duration = animation.duration.max(1);
+            self.extra.swing_stab = animation.kind == 2;
+            return true;
+        }
+        false
+    }
+    /// `swing_with` by the main hand or the off hand, which sets the arm that
+    /// swings (`currentSwing.hand().asArm(mainArm)`).
+    pub fn swing_arm_with(
+        &mut self,
+        main_hand: bool,
+        animation: crate::first_person::SwingAnimation,
+    ) {
+        if self.swing_with(animation) {
+            self.extra.swing_right_arm = Some(main_hand != self.main_arm_left());
+        }
+    }
+    /// The current swing's duration (`SwingAnimation.DEFAULT`'s 6 ticks
+    /// unless it was given one).
+    pub fn swing_ticks(&self) -> i32 {
+        if self.ai.swing_duration > 0 {
+            self.ai.swing_duration
+        } else {
+            6
         }
     }
 }
@@ -431,18 +464,21 @@ pub fn tick(
     }
     true
 }
-/// LivingEntity.updateSwingTime (6-tick swing duration).
+/// LivingEntity.updateSwingTime (the swing's duration, 6 ticks by default).
 pub fn tick_swing(m: &mut Mob) {
+    let duration = m.swing_ticks();
     if m.ai.swinging {
         m.ai.swing_time += 1;
-        if m.ai.swing_time >= 6 {
+        if m.ai.swing_time >= duration {
             m.ai.swing_time = 0;
             m.ai.swinging = false;
+            m.extra.swing_stab = false;
+            m.extra.swing_right_arm = None;
         }
     } else {
         m.ai.swing_time = 0;
     }
-    m.anim.attack_anim = m.ai.swing_time as f32 / 6.0;
+    m.anim.attack_anim = m.ai.swing_time as f32 / duration as f32;
 }
 /// `LivingEntity.baseTick` refills a breather's air by 4, then
 /// `Axolotl.handleAirSupply` (unless the mob has no AI): water or rain fills

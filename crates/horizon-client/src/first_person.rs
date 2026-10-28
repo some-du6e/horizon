@@ -23,6 +23,15 @@ pub enum ItemPose {
     },
     /// Riptide's spin (`isAutoSpinAttack`): the item held up like a fork.
     SpinAttack,
+    /// A `STAB` swing (spears' jab) instead of the whack.
+    Stab,
+    /// A spear charging (`ItemUseAnimation.SPEAR`).
+    Spear {
+        ticks_used: f32,
+        kinetic: crate::spear_anim::KineticTimings,
+        /// Ticks since a charge's hit (`ticksSinceKineticHitFeedback`).
+        since_hit: f32,
+    },
     Bow {
         ticks_used: f32,
     },
@@ -68,6 +77,19 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
     }
     if matches!(pose, ItemPose::Using) {
         return m;
+    }
+    // The spear's use has its own arm transform (no equip height).
+    if let ItemPose::Spear {
+        ticks_used,
+        kinetic,
+        since_hit,
+    } = pose
+    {
+        return Mat4::from_translation(Vec3::new(invert * 0.56, -0.52, -0.72))
+            * crate::spear_anim::first_person_use(left, ticks_used, kinetic, since_hit);
+    }
+    if matches!(pose, ItemPose::Stab) {
+        return m * crate::spear_anim::first_person_attack(left, attack);
     }
     if matches!(pose, ItemPose::SpinAttack) {
         return m

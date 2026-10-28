@@ -343,6 +343,11 @@ impl Game<'_> {
             .as_ref()
             .map(|s| s.item.clone());
         let off = self.offhand.as_ref().map(|s| s.item.clone());
+        let kinetic = [main.as_deref(), off.as_deref()].map(|item| {
+            item.and_then(|i| self.res.items().get(i))
+                .and_then(|i| i.kinetic_weapon)
+        });
+        let stab = self.swing.current.is_some_and(|c| c.animation.kind == 2);
         let riding = self.riding.is_some();
         let hurt = p.health.hurt_animation_time;
         let Some(m) = self.player_model.as_mut() else {
@@ -408,6 +413,8 @@ impl Game<'_> {
         m.extra.elytra.tick(fall_flying, crouching, velocity);
         m.extra.swim.tick(visually_swimming, in_water);
         m.extra.swing_right_arm = swing_right_arm;
+        m.extra.swing_stab = stab;
+        m.extra.kinetic = kinetic;
         m.hurt_time = hurt;
     }
     /// Whether the player's own model shows in the world view.

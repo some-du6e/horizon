@@ -1423,6 +1423,11 @@ impl Game<'_> {
                 .and_then(|s| s.as_ref())
                 .map(|s| s.item.clone());
             m.extra.off_hand = g.offhand.as_ref().map(|s| s.item.clone());
+            m.extra.kinetic =
+                [m.extra.main_hand.as_deref(), m.extra.off_hand.as_deref()].map(|i| {
+                    i.and_then(|i| self.res.items().get(i))
+                        .and_then(|i| i.kinetic_weapon)
+                });
             [m.extra.head, m.extra.chest, m.extra.legs, m.extra.feet] = g
                 .armor
                 .each_ref()

@@ -243,6 +243,8 @@ pub enum ArmPose {
     CrossbowCharge,
     /// Raising a trident to throw it (or to launch with Riptide).
     ThrowTrident,
+    /// Holding or charging a spear (`SpearAnimations.thirdPersonHandUse`).
+    Spear,
 }
 /// HumanoidModel.setupAnim with empty hands (endermen).
 pub fn humanoid_pub(p: &mut Poses, s: &State, _m: &Mob) {
@@ -286,6 +288,11 @@ pub struct Hum {
     pub using_item: bool,
     /// The arm the current swing moves (`Some(true)` for the right one).
     pub swing_right_arm: Option<bool>,
+    /// The current swing is a `STAB`.
+    pub stab: bool,
+    /// For the right and left arm: the spear it holds, and the ticks it has
+    /// been charging (0 when it is not).
+    pub spear: [(Option<crate::spear_anim::KineticTimings>, f32); 2],
 }
 impl Hum {
     pub fn new(right: ArmPose, left: ArmPose) -> Self {
@@ -303,6 +310,8 @@ impl Hum {
             swim: 0.0,
             using_item: false,
             swing_right_arm: None,
+            stab: false,
+            spear: [(None, 0.0); 2],
         }
     }
 }
@@ -312,6 +321,50 @@ impl ArmPose {
     }
     fn affects_offhand(self) -> bool {
         self.two_handed() || self == Self::ThrowTrident
+    }
+}
+/// `HumanoidMobRenderer.usesSpearPose` for a mob's held item: a spear,
+/// known by its `kinetic_weapon` or, for a mob the server never described,
+/// by the `#minecraft:spears` items' `_spear` ids.
+fn holds_spear(item: Option<&str>, kinetic: Option<crate::spear_anim::KineticTimings>) -> bool {
+    kinetic.is_some() || item.is_some_and(|i| i.ends_with("_spear"))
+}
+/// `HumanoidMobRenderer.getArmPose`'s spear part for `h`: an arm whose hand
+/// holds a spear, or whose swing is a stab, takes `ArmPose.SPEAR` (with the
+/// spear's timings and the ticks it has been charging).
+pub(super) fn spear_arms(h: &mut Hum, m: &Mob, s: &State) {
+    let left_main = m.main_arm_left();
+    if s.swing > 0.0 && h.swing_right_arm.is_none() {
+        // A mob swings its main hand.
+        h.swing_right_arm = Some(!left_main);
+    }
+    h.stab = m.extra.swing_stab && s.swing > 0.0;
+    let ticks = (m.extra.using_item as f32 - 1.0 + s.partial).max(0.0);
+    let using = m.extra.using_item > 0;
+    let hands = [
+        (
+            m.extra.main_hand.as_deref(),
+            m.extra.kinetic[0],
+            using && !m.extra.using_off_hand,
+        ),
+        (
+            m.extra.off_hand.as_deref(),
+            m.extra.kinetic[1],
+            using && m.extra.using_off_hand,
+        ),
+    ];
+    for (main, (item, kinetic, charging)) in [true, false].into_iter().zip(hands) {
+        let right = main != left_main;
+        let stabbing = h.stab && h.swing_right_arm == Some(right);
+        if !(holds_spear(item, kinetic) || stabbing) {
+            continue;
+        }
+        h.spear[usize::from(!right)] = (kinetic, if charging { ticks } else { 0.0 });
+        if right {
+            h.right = ArmPose::Spear;
+        } else {
+            h.left = ArmPose::Spear;
+        }
     }
 }
 /// `AnimationUtils.animateCrossbowHold`.
@@ -378,6 +431,11 @@ fn pose_arm(p: &mut Poses, pose: ArmPose, right: bool, h: &Hum) {
         }
         ArmPose::CrossbowHold => crossbow_hold(p, hx, hy, right),
         ArmPose::CrossbowCharge => crossbow_charge(p, h.charge.0, h.charge.1, right),
+        ArmPose::Spear => {
+            let (kinetic, ticks) = h.spear[usize::from(!right)];
+            let lowered = h.fall_flying || h.swim > 0.0;
+            crate::spear_anim::third_person_hand_use(p, right, lowered, ticks, kinetic);
+        }
     }
 }
 /// `HumanoidModel.setupAnim` (and `ZombieModel.setupAttackAnimation`).
@@ -440,16 +498,23 @@ pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
         p.get("right_arm")[4] += body_y;
         p.get("left_arm")[4] += body_y;
         p.get("left_arm")[3] += body_y;
-        // Ease.outQuart
-        let eased = 1.0 - (1.0 - swing).powi(4);
-        let aa = (eased * PI).msin();
-        let bb = (swing * PI).msin() * -(hx - 0.7) * 0.75;
-        let r = p.get("right_arm");
-        r[3] -= aa * 1.2 + bb;
-        r[4] += body_y * 2.0;
-        r[5] += (swing * PI).msin() * -0.4;
+        if h.stab {
+            let right = h.swing_right_arm.unwrap_or(true);
+            crate::spear_anim::third_person_attack_hand(p, swing, right);
+        } else {
+            // Ease.outQuart
+            let eased = 1.0 - (1.0 - swing).powi(4);
+            let aa = (eased * PI).msin();
+            let bb = (swing * PI).msin() * -(hx - 0.7) * 0.75;
+            let r = p.get("right_arm");
+            r[3] -= aa * 1.2 + bb;
+            r[4] += body_y * 2.0;
+            r[5] += (swing * PI).msin() * -0.4;
+        }
     }
-    if let Some(aggressive) = h.zombie {
+    // AnimationUtils.animateZombieArms leaves a spear's arms alone.
+    let spear = h.right == ArmPose::Spear || h.left == ArmPose::Spear;
+    if let Some(aggressive) = h.zombie.filter(|_| !spear) {
         // AnimationUtils.animateZombieArms
         let raise = !s.baby || !h.holding;
         let drop = if raise {
@@ -514,12 +579,13 @@ fn swim(p: &mut Poses, pos: f32, h: &Hum) {
         );
     }
     let swim_pos = pos % 26.0;
-    let right_amount = if h.swing_right_arm == Some(true) {
+    // An arm holding a spear, or swinging, keeps its pose.
+    let right_amount = if h.swing_right_arm == Some(true) || h.right == ArmPose::Spear {
         0.0
     } else {
         amount
     };
-    let left_amount = if h.swing_right_arm == Some(false) {
+    let left_amount = if h.swing_right_arm == Some(false) || h.left == ArmPose::Spear {
         0.0
     } else {
         amount
@@ -656,6 +722,8 @@ pub fn setup(
             h.holding = m.extra.main_hand.is_some();
             h.crouching = m.extra.crouching;
             h.passenger = m.extra.passenger;
+            h.swing_right_arm = m.extra.swing_right_arm;
+            spear_arms(&mut h, m, s);
             humanoid(p, s, &h);
             if m.kind.anim == Anim::ZombifiedPiglin {
                 super::piglin::ears(p, s);
@@ -715,6 +783,11 @@ pub fn setup(
             h.swim = m.extra.swim.amount(s.partial);
             h.using_item = m.extra.using_item > 0;
             h.swing_right_arm = m.extra.swing_right_arm;
+            // AvatarRenderer.getArmPose: a spear in hand, charging or not,
+            // or a stab (a skeleton's bow keeps its pose).
+            if !(bow && m.ai.aggressive) {
+                spear_arms(&mut h, m, s);
+            }
             humanoid(p, s, &h);
             if m.ai.aggressive && !bow {
                 // SkeletonModel melee pose.
@@ -949,5 +1022,101 @@ mod flight_pose_tests {
         let mut dry = make();
         humanoid(&mut dry, &state, &Hum::new(ArmPose::Empty, ArmPose::Empty));
         assert_eq!(dry.get("head")[3], 30.0f32.to_radians());
+    }
+}
+
+#[cfg(test)]
+mod spear_pose_tests {
+    use super::*;
+    use crate::first_person::SwingAnimation;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn mob(anim: Anim, main: Option<&str>) -> Mob {
+        let mut kind = (*super::super::sensor_scan_tests::kind()).clone();
+        kind.anim = anim;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.main_hand = main.map(Into::into);
+        m.ai.aggressive = true;
+        m
+    }
+    fn posed(m: &Mob) -> Poses {
+        let mut p = Poses {
+            map: [
+                "head",
+                "body",
+                "right_arm",
+                "left_arm",
+                "right_leg",
+                "left_leg",
+            ]
+            .into_iter()
+            .map(|n| (n.to_string(), [0.0; 9]))
+            .collect(),
+            dummy: [0.0; 9],
+            skipped: Default::default(),
+            hidden: Default::default(),
+        };
+        let s = State {
+            pos: 0.0,
+            speed: 0.0,
+            age: 0.0,
+            y_rot: 0.0,
+            x_rot: 0.0,
+            swing: 0.0,
+            baby: false,
+            partial: 0.0,
+        };
+        setup(m, &s, &mut p, &HashMap::new());
+        p
+    }
+
+    #[test]
+    fn a_zombie_points_its_spear_instead_of_raising_both_arms() {
+        // AnimationUtils.animateZombieArms: both arms out at -PI / 1.5.
+        let mut bare = posed(&mob(Anim::Zombie, None));
+        assert!((bare.get("right_arm")[3] + PI / 1.5).abs() < 1e-5);
+        // ArmPose.SPEAR: the spear arm along the look, the other one down.
+        let mut armed = posed(&mob(Anim::Zombie, Some("minecraft:iron_spear")));
+        assert!((armed.get("right_arm")[3] - (-PI / 2.0 + 0.8)).abs() < 1e-5);
+        assert!(armed.get("left_arm")[3].abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_player_holding_a_spear_takes_the_spear_pose() {
+        // A player is never aggressive (no SkeletonModel melee pose).
+        let player = |item: &str| {
+            let mut m = mob(Anim::Humanoid { zombie_arms: false }, Some(item));
+            m.ai.aggressive = false;
+            m
+        };
+        let mut item = posed(&player("minecraft:stick"));
+        // ArmPose.ITEM: xRot * 0.5 - PI / 10.
+        assert!((item.get("right_arm")[3] + PI / 10.0).abs() < 1e-5);
+        let mut spear = posed(&player("minecraft:diamond_spear"));
+        assert!((spear.get("right_arm")[3] - (-PI / 2.0 + 0.8)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_swing_takes_the_packet_duration_and_arm() {
+        let mut m = mob(Anim::Humanoid { zombie_arms: false }, None);
+        m.swing_arm_with(
+            true,
+            SwingAnimation {
+                kind: 2,
+                duration: 19,
+            },
+        );
+        assert!(m.extra.swing_stab && m.extra.swing_right_arm == Some(true));
+        for _ in 0..19 {
+            super::super::ai::tick_swing(&mut m);
+        }
+        assert!(m.ai.swinging && (m.anim.attack_anim - 18.0 / 19.0).abs() < 1e-6);
+        super::super::ai::tick_swing(&mut m);
+        assert!(!m.ai.swinging && !m.extra.swing_stab && m.extra.swing_right_arm.is_none());
+        // The off hand of a left-handed mob is its right arm.
+        m.extra.left_handed = true;
+        m.swing_arm_with(false, SwingAnimation::DEFAULT);
+        assert_eq!(m.extra.swing_right_arm, Some(true));
     }
 }
