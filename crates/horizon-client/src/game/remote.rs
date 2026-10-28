@@ -1443,6 +1443,13 @@ impl Game<'_> {
             {
                 return;
             }
+            // So does a firework rocket: its own tick flies it on.
+            if path.is_some()
+                && let Some(f) = self.rockets.iter_mut().find(|f| f.id == id as u32)
+            {
+                f.position = Vec3::new(position[0], position[1], position[2]);
+                return;
+            }
             // A dragon fireball keeps Entity's NO_OP InterpolationHandler too:
             // the server's position replaces its own at once.
             if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
@@ -3067,6 +3074,8 @@ impl Game<'_> {
             p.velocity = v;
         } else if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
             b.velocity = v;
+        } else if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id as u32) {
+            r.velocity = v;
         } else if let Some(p) = self
             .remote
             .as_mut()
@@ -4165,9 +4174,10 @@ impl Game<'_> {
     fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
         // FireworkRocketItem.useOn: SUCCESS on the client too (only the
         // server launches it), so neither UseItem nor the off hand follows;
-        // PASS while gliding, so the use boosts instead.
+        // PASS while gliding, so the use boosts instead, and in adventure
+        // mode (ItemStack.useOn, without can_place_on).
         if &*stack.item == "minecraft:firework_rocket" {
-            return !self.player.as_ref().is_some_and(|p| p.fall_flying);
+            return self.may_build() && !self.player.as_ref().is_some_and(|p| p.fall_flying);
         }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
@@ -4364,6 +4374,17 @@ impl Game<'_> {
         self.with_hand(hand, |g| g.start_eating(&info));
         if self.with_hand(hand, |g| g.remote_use_book(&held)) {
             return true;
+        }
+        // FireworkRocketItem.use: SUCCESS while gliding (only the server
+        // launches it), so startUseItem swings this hand itself and the
+        // other hand gets no turn; a vanilla server swings it for the
+        // others only.
+        if &*held.item == "minecraft:firework_rocket" {
+            let boosts = self.player.as_ref().is_some_and(|p| p.fall_flying);
+            if boosts {
+                self.with_hand(hand, Game::swing_arm);
+            }
+            return boosts;
         }
         self.with_hand(hand, |g| g.remote_start_held_use(&held));
         item_has_use(&info)
