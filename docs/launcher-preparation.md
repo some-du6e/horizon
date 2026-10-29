@@ -36,8 +36,8 @@ components as well as tags. The data generator also remains separate. Inspection
 `net.minecraft.data.Main.main` showed that it calls `Util.shutdownExecutors` after running
 its providers. Calling it inside a worker would shut down shared executors; incorporating
 its providers directly needs a separate comparison of registry and executor lifetimes.
-Fresh release preparation therefore starts five exporter/data-generator JVMs, down from 18,
-and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1` retains separate exporter JVMs for
+Fresh release preparation therefore starts five exporter/data-generator JVMs, down from 18
+(six with 6 cores or more, below; the release check runs that way), and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1` retains separate exporter JVMs for
 output comparisons and diagnosis.
 
 Those JVMs run on four lanes at once, so at most three run at a time: the server worker's
@@ -45,7 +45,10 @@ steps in their fixed order; the client worker's, then the command registries'; t
 generator, then the creative tabs'; and the Rust-only copying (client assets and data, the
 world generator's bundle), spread over several threads. The world generator's tables, which
 need the block facts and the reports, and the manifest come after all four. A worker stops
-when its lane is done. The two sides compile at once too. Imports and checks hash the pinned
+when its lane is done. With 6 cores or more (`HORIZON_PREPARE_JOBS`), the world generator's
+block behaviour and structure blocks, a quarter of the server lane, run on a fifth lane in a
+second server JVM: it costs a second Bootstrap and ~300 MB, and only pays off when the other
+lanes would leave cores idle. The two sides compile at once too. Imports and checks hash the pinned
 files on several threads; every file is still checked in full. `HORIZON_PREPARE_JOBS=1` runs
 it all one step after another (for a machine short on memory).
 Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
