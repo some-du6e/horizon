@@ -539,6 +539,9 @@ impl LodSource for ServerTerrain {
             details: Vec::new(),
         })
     }
+    fn keeps_observed(&self) -> bool {
+        true
+    }
 }
 
 struct Sampler {
