@@ -355,8 +355,9 @@ struct Run<'a> {
     /// The client jar and its libraries: the classpath of the client-side exporters.
     client_classpath: String,
     bundles: Mutex<Option<PathBuf>>,
-    /// The server and the client exporter JVMs, which run at the same time.
-    workers: [Mutex<Option<worker::Worker>>; 2],
+    /// The exporter JVMs, which run at the same time: the server's, the client's, and on a
+    /// machine with cores to spare a second server one for the generator's block behaviour.
+    workers: [Mutex<Option<worker::Worker>>; 3],
     previous: Value,
     origin: Value,
     /// Progress lines from every lane; the caller's thread prints them.
@@ -375,9 +376,14 @@ impl Run<'_> {
         Ok(bundle.clone().unwrap())
     }
 
-    /// Stops a side's exporter JVM once its lane needs it no more, to free its memory.
-    fn close_worker(&self, side: usize) {
-        drop(self.workers[side].lock().unwrap().take());
+    /// Stops an exporter JVM once its lane needs it no more, to free its memory.
+    fn close_worker(&self, worker: usize) {
+        drop(self.workers[worker].lock().unwrap().take());
+    }
+
+    /// The worker of a classpath's side: 0 for the server's, 1 for the client's.
+    fn side(&self, classpath: &str) -> usize {
+        usize::from(classpath == self.client_classpath)
     }
 
     fn oracle(&self, name: &str) -> PathBuf {
@@ -412,9 +418,12 @@ impl Run<'_> {
         fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// `java -Xmx<heap> -cp <classes>:<classpath> dev.horizonlab.parity.<main> <args>`.
+    /// `java -Xmx<heap> -cp <classes>:<classpath> dev.horizonlab.parity.<main> <args>`, or the
+    /// same task on exporter JVM `worker`.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
+        worker: usize,
         heap: &str,
         classpath: &str,
         main: &str,
@@ -422,7 +431,7 @@ impl Run<'_> {
         log: &fs::File,
         log_path: &Path,
     ) -> Result<(), String> {
-        let side = usize::from(classpath == self.client_classpath);
+        let side = self.side(classpath);
         let classes = self
             .bundle()?
             .join(if side == 1 { "client" } else { "server" });
@@ -431,9 +440,10 @@ impl Run<'_> {
             "VanillaCommandParseOracle" | "VanillaCreativeTabsExporter"
         ) && std::env::var_os("HORIZON_PREPARE_ISOLATED").is_none()
         {
-            let mut worker = self.workers[side].lock().unwrap();
+            let name = ["server", "client", "server-blocks"][worker];
+            let mut worker = self.workers[worker].lock().unwrap();
             if worker.is_none() {
-                *worker = Some(worker::Worker::new(self, &classes, classpath)?);
+                *worker = Some(worker::Worker::new(self, name, &classes, classpath)?);
             }
             return worker.as_mut().unwrap().run(main, args, log_path);
         }
@@ -456,6 +466,26 @@ impl Run<'_> {
         what: &str,
         classpath: &str,
         classes: &Path,
+        sources: &[&Path],
+        mains: &[&str],
+        heap: &str,
+        args: &[String],
+        log: &Path,
+    ) -> Result<(), String> {
+        let worker = self.side(classpath);
+        self.export_on(
+            worker, what, classpath, classes, sources, mains, heap, args, log,
+        )
+    }
+
+    /// `export`, on exporter JVM `worker`.
+    #[allow(clippy::too_many_arguments)]
+    fn export_on(
+        &self,
+        worker: usize,
+        what: &str,
+        classpath: &str,
+        classes: &Path,
         _sources: &[&Path],
         mains: &[&str],
         heap: &str,
@@ -470,7 +500,7 @@ impl Run<'_> {
         mkdir(classes)?;
         let file = self.log_file(log)?;
         for main in mains {
-            self.run(heap, classpath, main, args, &file, log)
+            self.run(worker, heap, classpath, main, args, &file, log)
                 .map_err(fail)?;
         }
         (self.log)(&format!("Exported {what}{}", took(started)));
@@ -565,7 +595,7 @@ fn prepare_impl(options: &Options, log: Log, compile_only: bool) -> Result<PathB
                 server_classpath: classpath_join(&found.jars["server"], &found.libraries),
                 client_classpath: classpath_join(&found.jars["client"], &client_libraries),
                 bundles: Mutex::new(None),
-                workers: [Mutex::new(None), Mutex::new(None)],
+                workers: [Mutex::new(None), Mutex::new(None), Mutex::new(None)],
                 previous,
                 origin,
                 log: &say,
@@ -603,6 +633,11 @@ type Entries = Vec<(&'static str, Value)>;
 /// the server exporter JVM's steps in their old order (they share its state), the client
 /// exporter JVM's then the command registries' JVM, the data generator's then the creative
 /// inventory's, and the copying, which needs no Java. At most three JVMs run at a time.
+/// From this many cores (`pool::jobs`) the generator's block behaviour gets its own server JVM.
+/// It pays a second Bootstrap and ~300 MB, which only pays off when the other lanes leave cores
+/// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.
+const SPLIT_BLOCKS_JOBS: usize = 6;
+
 fn steps(
     run: &Run,
     lock: &artifacts::Lock,
@@ -653,6 +688,8 @@ fn steps(
     let render_files = ["render-definitions.json", "occlusion.nbt"];
     let command_oracle = run.oracle("VanillaCommandParseOracle.java");
     let command_sources = source_hashes(repo, &[&command_oracle])?;
+
+    let split_blocks = pool::jobs() >= SPLIT_BLOCKS_JOBS;
 
     // One file each, exported again when the exporter or the jar it reads changed.
     let single = |what: &str,
@@ -867,7 +904,9 @@ fn steps(
             &[],
             "behaviour-export.log",
         )?;
-        worldgen_blocks(run)?;
+        if !split_blocks {
+            worldgen_blocks(run, 0)?;
+        }
         run.close_worker(0);
         Ok(vec![
             ("gameplay_exporters_sha256", gameplay),
@@ -1032,7 +1071,17 @@ fn steps(
         ])
     });
 
-    let entries: Entries = pool::lanes(vec![server, client, reports, files])?
+    // With cores to spare, the generator's block behaviour (a quarter of the server lane's
+    // time) runs on a second server JVM beside the first; it pays its own Bootstrap.
+    let blocks: pool::Lane<Entries> = Box::new(|| {
+        if split_blocks {
+            worldgen_blocks(run, 2)?;
+            run.close_worker(2);
+        }
+        Ok(Vec::new())
+    });
+
+    let entries: Entries = pool::lanes(vec![server, client, reports, files, blocks])?
         .into_iter()
         .flatten()
         .collect();
@@ -1312,7 +1361,7 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
 }
 
 /// The generator's block behaviour and structure block files, from the server exporter JVM.
-fn worldgen_blocks(run: &Run) -> Result<(), String> {
+fn worldgen_blocks(run: &Run, worker: usize) -> Result<(), String> {
     let local = &run.local;
     let blocks = run.resources.join("worldgen").join("blocks");
     // Block behavior used by feature placement checks (survival, support, collision).
@@ -1328,7 +1377,7 @@ fn worldgen_blocks(run: &Run) -> Result<(), String> {
         let stamp = behavior.join("stamp.json");
         let inputs = stamp_inputs(run)?;
         if !stamp_matches(&stamp, &inputs, &outputs) {
-            export_block_behavior(run, &behavior)?;
+            export_block_behavior(run, worker, &behavior)?;
             write_stamp(&stamp, &inputs, &outputs)?;
         }
     }
@@ -1344,7 +1393,8 @@ fn worldgen_blocks(run: &Run) -> Result<(), String> {
     let stamp = structures.join("stamp.json");
     let inputs = stamp_inputs(run)?;
     if !stamp_matches(&stamp, &inputs, std::slice::from_ref(&output)) {
-        run.export(
+        run.export_on(
+            worker,
             "structure blocks",
             &run.server_classpath,
             &structures.join("classes"),
@@ -1460,8 +1510,11 @@ fn worldgen_tables(run: &Run) -> Result<(), String> {
 /// The vanilla exporters of block properties, support, collision and survival definitions.
 /// Feature placement needs them: without these files the generator skips every placed feature
 /// whose blocks are checked for survival or support (trees, flowers, grass, kelp, ...).
-fn export_block_behavior(run: &Run, export: &Path) -> Result<(), String> {
+fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), String> {
     (run.log)("Exporting block behavior (VanillaSimpleBlockOracle)");
+    let fail = |e: String| format!("{e} while exporting block behavior");
+    // Compiled first, so the time is this step's (the JVM's start included).
+    run.bundle().map_err(fail)?;
     let started = Instant::now();
     let classes = export.join("classes");
     mkdir(&classes)?;
@@ -1474,6 +1527,7 @@ fn export_block_behavior(run: &Run, export: &Path) -> Result<(), String> {
         )
     };
     run.run(
+        worker,
         "1G",
         &run.server_classpath,
         "VanillaSimpleBlockOracle",

@@ -121,14 +121,16 @@ def main():
                 wrapper.chmod(0o755)
                 env['JAVA_HOME'] = str(runtime)
                 env['PATH'] = str(runtime / 'bin')
+                # As a machine with 6 cores or more runs it: block behaviour on a second server JVM.
+                env['HORIZON_PREPARE_JOBS'] = '6'
             started = time.monotonic()
             with (work / f'{name}.log').open('w') as log:
                 subprocess.run([str(binary), '--root', str(folder)], cwd=folder, env=env,
                                stdout=log, stderr=subprocess.STDOUT, check=True, timeout=1200)
             if name == 'batched':
                 launches = [line for line in trace.read_text().splitlines() if line != '-version']
-                if len(launches) != 5:
-                    raise SystemExit(f'Expected 5 exporter/data-generator JVMs, got {len(launches)}')
+                if len(launches) != 6:
+                    raise SystemExit(f'Expected 6 exporter/data-generator JVMs, got {len(launches)}')
                 print(f'Runtime-only preparation: {len(launches)} JVM launches', flush=True)
             text = (work / f'{name}.log').read_text()
             if 'Compiling ' in text:
