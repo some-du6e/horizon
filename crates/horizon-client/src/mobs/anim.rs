@@ -1296,6 +1296,47 @@ mod flight_pose_tests {
     }
 
     #[test]
+    fn a_held_spear_points_the_arm_along_the_look() {
+        // AvatarRenderer.getArmPose: a spear (`#minecraft:spears`) is the
+        // SPEAR pose at rest too, and SpearAnimations.thirdPersonHandUse
+        // points that arm along the look; a charge then raises and sways it.
+        let state = State {
+            pos: 0.0,
+            speed: 0.0,
+            age: 0.0,
+            y_rot: 0.0,
+            x_rot: 0.0,
+            swing: 0.0,
+            baby: false,
+            partial: 0.0,
+        };
+        let make = || Poses {
+            map: ["head", "right_arm", "left_arm"]
+                .into_iter()
+                .map(|n| (n.to_string(), [0.0; 9]))
+                .collect(),
+            dummy: [0.0; 9],
+            skipped: Default::default(),
+            hidden: Default::default(),
+        };
+        let mut m = player();
+        m.extra.main_hand = Some("minecraft:iron_spear".into());
+        let mut rest = make();
+        setup(&m, &state, &mut rest, &HashMap::new());
+        assert!((rest.get("right_arm")[3] - (-PI / 2.0 + 0.8)).abs() < 1e-6);
+        assert!((rest.get("right_arm")[4] + 0.1).abs() < 1e-6);
+        // Charging (ticksUsingItem 20, past the iron spear's 12-tick raise).
+        m.extra.using_item = 20;
+        let mut charging = make();
+        setup(&m, &state, &mut charging, &HashMap::new());
+        let kinetic = crate::spear::Kinetic::of("minecraft:iron_spear").unwrap();
+        let (x, y, _) = crate::spear::third_person_arm(&kinetic, 20.0, true, (0.0, 0.0), false);
+        assert!((charging.get("right_arm")[3] - x).abs() < 1e-6);
+        assert!((charging.get("right_arm")[4] - y).abs() < 1e-6);
+        assert!((x - rest.get("right_arm")[3]).abs() > 0.01);
+    }
+
+    #[test]
     fn a_brush_being_used_sweeps_the_arm_lower_than_a_plain_item() {
         // AvatarRenderer.getArmPose: a brush being used is the BRUSH pose, and
         // HumanoidModel.poseRightArm drops that arm twice as far as ITEM
