@@ -529,6 +529,19 @@ impl LodSource for ServerTerrain {
     }
 }
 
+impl Sampler {
+    /// For a column whose chunk of the map is on its way: its coarser
+    /// levels' meanwhile, as they come first (`waited`: sampled again).
+    fn coarser(&mut self, x: i32, z: i32) -> Column {
+        self.waited = true;
+        let map = self.terrain.blue_map.as_ref();
+        match map.map(|map| map.coarser_column(x, z)) {
+            Some(Found::Ready(column)) => column,
+            _ => Column::default(),
+        }
+    }
+}
+
 struct Sampler {
     terrain: Arc<ServerTerrain>,
     details: Vec<LodDetail>,
@@ -570,10 +583,7 @@ impl LodSampler for Sampler {
     fn column(&mut self, x: i32, z: i32) -> Column {
         match self.terrain.chunk_or_map(x >> 4, z >> 4) {
             Found::Ready(c) => c[((z & 15) * 16 + (x & 15)) as usize].clone(),
-            Found::Waiting => {
-                self.waited = true;
-                Column::default()
-            }
+            Found::Waiting => self.coarser(x, z),
             Found::Absent => Column::default(),
         }
     }
@@ -590,10 +600,7 @@ impl LodSampler for Sampler {
         if width <= 16 {
             let chunk = match self.terrain.chunk_or_map(x >> 4, z >> 4) {
                 Found::Ready(chunk) => chunk,
-                Found::Waiting => {
-                    self.waited = true;
-                    return Column::default();
-                }
+                Found::Waiting => return self.coarser(x, z),
                 Found::Absent => return Column::default(),
             };
             let width = width.max(1) as usize;
