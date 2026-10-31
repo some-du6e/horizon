@@ -828,9 +828,29 @@ impl BlueMap {
             return Found::Absent;
         };
         let level = map.lowres.level_for(width);
-        let (x, z) = (x + width / 2, z + width / 2);
+        self.column_at(&map, level, x + width / 2, z + width / 2, width)
+    }
+    /// Block (x, z)'s column from the finest level coarser than the first
+    /// that has it: drawn while that one is on its way (`chunk` waiting).
+    pub fn coarser_column(&self, x: i32, z: i32) -> Found<Column> {
+        let Some(map) = self.inner.state.lock().unwrap().map.clone() else {
+            return Found::Absent;
+        };
+        let mut found = Found::Absent;
+        for level in 2..=map.lowres.levels {
+            match self.column_at(&map, level, x, z, map.lowres.scale(level)) {
+                Found::Ready(column) => return Found::Ready(column),
+                Found::Waiting => found = Found::Waiting,
+                Found::Absent => {}
+            }
+        }
+        found
+    }
+    /// The column of `level`'s pixel at block (x, z), its depth bound by the
+    /// pixels `width` blocks each way.
+    fn column_at(&self, map: &MapInfo, level: u8, x: i32, z: i32, width: i32) -> Found<Column> {
         let mut last = None;
-        let pixel = match self.inner.pixel(&map, &mut last, level, x, z) {
+        let pixel = match self.inner.pixel(map, &mut last, level, x, z) {
             Found::Ready(pixel) => pixel,
             Found::Waiting => return Found::Waiting,
             Found::Absent => return Found::Absent,
@@ -839,7 +859,7 @@ impl BlueMap {
         let low = [(-width, 0), (width, 0), (0, -width), (0, width)]
             .into_iter()
             .filter_map(
-                |(dx, dz)| match self.inner.pixel(&map, &mut last, level, x + dx, z + dz) {
+                |(dx, dz)| match self.inner.pixel(map, &mut last, level, x + dx, z + dz) {
                     Found::Ready(p) if p.color >> 24 != 0 => Some(i32::from(p.height) + 1),
                     _ => None,
                 },
@@ -1739,6 +1759,60 @@ mod tests {
         assert_eq!(details[0].1, columns);
         assert_eq!(details[1].1[0].surface.map(|s| s.height), Some(71));
         assert_eq!(details[2].1[0], Column::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The finest level on its way: a chunk-sized cell is drawn from a
+    /// coarser one meanwhile, and sampled again once it comes.
+    #[test]
+    fn coarser_levels_stand_in_for_the_finest_on_its_way() {
+        use crate::{server_terrain::ServerTerrain, streaming::LodSource};
+        let dir = scratch("coarser");
+        let maps = dir.join("map");
+        std::fs::create_dir_all(&maps).unwrap();
+        std::fs::write(maps.join("settings.json"), br#"{"maps":["world"]}"#).unwrap();
+        std::fs::write(maps.join("world.json"), br#"{"lowres":{}}"#).unwrap();
+        let green = |_: usize, _: usize| Pixel {
+            color: 0xFF57_7133,
+            height: 70,
+            block_light: 0,
+        };
+        for level in 2..=3 {
+            let tiles = maps.join(format!("world/{level}"));
+            std::fs::create_dir_all(&tiles).unwrap();
+            std::fs::write(tiles.join("0_0.png"), tile_png(&LOWRES, green)).unwrap();
+        }
+        let map = Arc::new(BlueMap::new(
+            "http://map.example.net",
+            "minecraft:overworld",
+            Vec::new(),
+            maps,
+            256,
+            palette(),
+        ));
+        map.set_center(3, 3);
+        assert_eq!(map.chunk(0, 0), Found::Waiting);
+        let Found::Ready(coarse) = map.coarser_column(3, 3) else {
+            panic!("level 2 is cached")
+        };
+        assert_eq!(coarse.spans.last().map(|s| s.max), Some(71));
+        let terrain = ServerTerrain::new(dir.join("chunks"), None, Some(map));
+        let mut sampler = terrain.clone().sampler();
+        assert!(!sampler.waited());
+        for width in [1, 4, 16] {
+            assert_eq!(
+                sampler
+                    .reduced_column(0, 0, width)
+                    .spans
+                    .last()
+                    .map(|s| s.max),
+                Some(71)
+            );
+            assert!(sampler.waited(), "sampled again once level 1 comes");
+        }
+        // Nowhere near any level: nothing to stand in, and not waited for.
+        assert_eq!(sampler.reduced_column(-4000, 0, 1), Column::default());
+        assert!(!sampler.waited());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

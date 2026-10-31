@@ -1252,10 +1252,12 @@ impl Lod {
         }
         changed
     }
-    /// A sample with data still on its way: drawn, its holes stood where
-    /// the coarser tile or the older sample it replaces had terrain, until
-    /// the data came (`refresh`) and the tile was sampled again. So it is
-    /// thrown away, and the tile sampled again then, or after `WAIT_RETRY`.
+    /// A sample with nothing yet, its data still on its way: drawn, its
+    /// hole stood where the coarser tile or the older sample it replaces had
+    /// terrain, until the data came (`refresh`) and the tile was sampled
+    /// again. So it is thrown away, and the tile sampled again then, or after
+    /// `WAIT_RETRY`. One partly there (BlueMap's coarser levels) is drawn
+    /// meanwhile, and sampled again when the rest comes.
     fn finish_waited(&mut self, key: TileKey) {
         self.pending.remove(&key);
         self.restale.remove(&key);
@@ -1465,7 +1467,7 @@ impl Lod {
                     samples,
                     waited,
                 } => {
-                    if waited {
+                    if waited && samples.iter().all(|c| *c == Column::default()) {
                         self.finish_waited(key);
                     } else {
                         self.finish_sample(key, samples);
@@ -2889,6 +2891,15 @@ mod tests {
         /// The chunks of `chunks` the active tiles don't draw as observed:
         /// the visited column or the tile's sample there, at the chunk's middle.
         fn missing(&self, chunks: impl Iterator<Item = (i32, i32)>) -> Vec<(i32, i32)> {
+            chunks
+                .filter(|&chunk| {
+                    self.drawn(chunk)
+                        .is_none_or(|c| c.spans.last().is_none_or(|s| s.max != 71))
+                })
+                .collect()
+        }
+        /// The column the active tiles draw at a chunk's middle.
+        fn drawn(&self, (cx, cz): (i32, i32)) -> Option<Column> {
             let lod = &self.lod;
             let snapshot = lod.snapshot();
             let drawn = |x: i32, z: i32| {
@@ -2905,12 +2916,7 @@ mod tests {
                     None => lod.ready[&key][(cz * CELLS as i32 + cx) as usize].clone(),
                 })
             };
-            chunks
-                .filter(|&(x, z)| {
-                    drawn(x * 16 + 8, z * 16 + 8)
-                        .is_none_or(|c| c.spans.last().is_none_or(|s| s.max != 71))
-                })
-                .collect()
+            drawn(cx * 16 + 8, cz * 16 + 8)
         }
     }
     impl Drop for ServerLod {
@@ -3020,17 +3026,23 @@ mod tests {
         fn sample(&mut self, _x: i32, _z: i32) -> Option<Surface> {
             None
         }
+        /// The coarse levels' stone, the finest's next state, and the
+        /// coarse one's while the finest is on its way (`server_terrain`).
         fn reduced_column(&mut self, _x: i32, _z: i32, width: i32) -> Column {
-            if width <= 16 && !self.arrived.load(Ordering::Relaxed) {
+            let state = if width > 16 {
+                self.stone
+            } else if self.arrived.load(Ordering::Relaxed) {
+                BlockStateId(self.stone.0 + 1)
+            } else {
                 self.waited = true;
-                return Column::default();
-            }
+                self.stone
+            };
             Column {
                 surface: None,
                 spans: vec![Span {
                     min: MIN_Y as i16,
                     max: 71,
-                    state: self.stone,
+                    state,
                     biome: 0,
                     light: 0xF0,
                 }],
@@ -3078,13 +3090,25 @@ mod tests {
             missing.len(),
             ring.len()
         );
-        assert!(!far.lod.waiting.is_empty());
         // The map's tiles arrive (`BlueMap::take_changed`): the finest replace them.
         arrived.store(true, Ordering::Relaxed);
         far.lod.refresh([-1024, -1024, 1024, 1024], (1, 24));
         far.run(camera, detail, distance, &none, true);
         assert!(far.lod.waiting.is_empty());
-        assert!(far.missing(ring.iter().copied()).is_empty());
+        let fine = BlockStateId(2);
+        let coarse: Vec<_> = ring
+            .iter()
+            .copied()
+            .filter(|&chunk| {
+                far.drawn(chunk)
+                    .is_none_or(|c| c.spans.last().is_none_or(|s| s.state != fine))
+            })
+            .collect();
+        assert!(
+            coarse.is_empty(),
+            "{} chunks still drawn coarse",
+            coarse.len()
+        );
         assert!(far.lod.active.iter().any(|key| key.level == 0));
         Ok(())
     }
