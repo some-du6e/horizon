@@ -14121,8 +14121,7 @@ impl Game<'_> {
         let enabled = self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
-            && self.title.is_none()
-            && (self.remote.is_none() || self.integrated.is_some());
+            && self.title.is_none();
         if !enabled {
             if self.lod.is_some() || self.lod_source_attempted {
                 self.clear_lod();
@@ -14134,9 +14133,31 @@ impl Game<'_> {
         }
         self.lod_source_attempted = true;
         let dim = self.dim;
-        let source = match &self.integrated {
-            Some(server) => server.call(move |game| game.lod_source_in(dim)).flatten(),
-            None => Some(self.streaming.lod_source()),
+        let source = match (&self.integrated, &self.remote) {
+            (Some(server), _) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            // A server's seed is its own: draw what it sent, on this visit and before.
+            (None, Some(remote)) => std::env::current_dir().ok().map(|home| {
+                use horizon_client::server_terrain as terrain;
+                let address = &remote.session.address;
+                let dir = terrain::level_dir(&home.join("server-terrain"), address, &remote.level);
+                // Bobby's chunks of the level are read as they're needed.
+                let bobby = terrain::bobby_root()
+                    .and_then(|root| {
+                        terrain::find_bobby(&root, address, remote.hashed_seed, &remote.level)
+                    })
+                    .map(|dir| {
+                        log::info!("Horizon: far terrain also reads Bobby's {}", dir.display());
+                        terrain::Bobby::new(
+                            dir,
+                            self.pack.assets.registry,
+                            self.res.biomes().clone(),
+                            self.res.facts(),
+                            horizon_client::save::decode_lit,
+                        )
+                    });
+                terrain::ServerTerrain::new(dir, bobby) as _
+            }),
+            (None, None) => Some(self.streaming.lod_source()),
         };
         if let Some(source) = source {
             self.lod = Some(horizon_client::lod::Lod::new(

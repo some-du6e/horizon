@@ -1790,6 +1790,19 @@ pub fn decode_proto(
     })
 }
 
+/// `decode`, then its stored light (`load_light`): a chunk of another game's
+/// folder, as far terrain reads Bobby's (`server_terrain::Bobby`).
+pub fn decode_lit(
+    root: &NamedTag,
+    registry: &'static BlockRegistry,
+    biomes: &Biomes,
+    sky_light: bool,
+) -> Option<Chunk> {
+    let mut chunk = decode(root, registry, biomes)?;
+    load_light(&root.tag, &mut chunk, sky_light);
+    Some(chunk)
+}
+
 /// Read the stored `SkyLight`/`BlockLight` layers of a chunk saved with
 /// `isLightOn` (`SerializableChunkData.read` + `ThreadedLevelLightEngine`),
 /// so it needs no relighting. A missing sky layer repeats the bottom layer of
@@ -6568,5 +6581,58 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A chunk in Bobby's folder (vanilla's chunk NBT) is read once by far
+    /// terrain, then kept in Horizon's.
+    #[test]
+    fn bobby_chunks_are_read_and_kept() {
+        use crate::server_terrain::{Bobby, ServerTerrain};
+        use horizon_world::{
+            compression::Compression,
+            nbt::Limits,
+            region::{ChunkRecord, RegionFile},
+        };
+        let Some(resources) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let resources = std::path::PathBuf::from(resources);
+        let assets = crate::assets::Assets::load(&resources).expect("assets");
+        let biomes = std::sync::Arc::new(Biomes::load(&resources).expect("biomes"));
+        let facts = crate::blocks::BlockFacts::load(&resources, assets.registry).expect("facts");
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let mut chunk = Chunk::empty(40, -3);
+        for y in -64..70 {
+            chunk.set(5, y, 9, stone.0);
+        }
+        let root = std::env::temp_dir().join(format!("horizon-bobby-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bobby_dir = root.join("bobby");
+        std::fs::create_dir_all(&bobby_dir).unwrap();
+        let record = ChunkRecord::from_nbt(
+            &encode(&chunk, assets.registry, &biomes),
+            Compression::Zlib,
+            0,
+            Limits::default(),
+        )
+        .unwrap();
+        RegionFile::open_writable(bobby_dir.join("r.1.-1.mca"), true)
+            .unwrap()
+            .write(horizon_core::position::ChunkPos::new(40, -3), &record)
+            .unwrap();
+        let bobby = Bobby::new(
+            bobby_dir.clone(),
+            assets.registry,
+            biomes,
+            &facts,
+            decode_lit,
+        );
+        let terrain = ServerTerrain::new(root.join("horizon"), Some(bobby));
+        let columns = terrain.chunk(40, -3).expect("Bobby's chunk");
+        assert_eq!(columns[9 * 16 + 5].surface.map(|s| s.height), Some(70));
+        std::fs::remove_dir_all(&bobby_dir).unwrap();
+        let kept = ServerTerrain::new(root.join("horizon"), None);
+        assert_eq!(kept.chunk(40, -3), Some(columns));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

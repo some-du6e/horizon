@@ -71,6 +71,7 @@ pub mod screen_draw;
 pub mod screen_effects;
 pub mod sculk;
 pub mod section_mask;
+pub mod server_terrain;
 pub mod settings;
 pub mod shader_pack_list;
 pub mod signs;
