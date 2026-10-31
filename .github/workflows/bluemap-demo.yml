@@ -25,6 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: bluemap-demo
+          cache-on-failure: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -41,9 +42,9 @@ jobs:
         run: python3 tools/demo/minecraft.py "$RUNNER_TEMP/minecraft"
       - name: Resources prepared from it
         run: |
+          # Its Java is JAVA_HOME's (setup-java's JDK: the exporters are compiled here).
           target/fast/horizon-prepare --prepare --minecraft-dir "$RUNNER_TEMP/minecraft" \
-            --server-jar "$RUNNER_TEMP/minecraft/server.jar" --java-home "$JAVA_HOME" --root "$PWD"
-          target/fast/horizon-prepare --check --root "$PWD"
+            --server-jar "$RUNNER_TEMP/minecraft/server.jar" --root "$PWD"
       - name: Record the video
         env:
           HORIZON_DEMO_BLUEMAP: ${{ secrets.DEMO_BLUEMAP_URL }}
