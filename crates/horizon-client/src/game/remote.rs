@@ -1780,6 +1780,9 @@ impl Game<'_> {
                     new.spin = old.spin;
                     new.o_spin = old.o_spin;
                 }
+                // So is a beacon's beam: a fresh one draws nothing until the next
+                // tick walks it again.
+                (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => new.keep_beam(old),
                 _ => {}
             }
             let command_block = matches!(loaded, BlockEntity::CommandBlock(_));
@@ -4826,7 +4829,10 @@ impl Game<'_> {
         // (their progress advances between the server's block updates).
         self.tick_block_entity_anims();
         self.tick_remote_spawners();
-        self.client_tick_beacons();
+        // Level.tickBlockEntities ticks them only while the level runs normally.
+        if running {
+            self.client_tick_beacons();
+        }
         self.tick_remote_potent_sulfur();
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
