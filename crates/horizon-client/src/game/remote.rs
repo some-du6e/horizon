@@ -5095,6 +5095,8 @@ impl Game<'_> {
             }));
         }
         self.remote_send_state(input);
+        // The rockets boosting this player tick after it.
+        self.tick_own_rockets();
         Ok(())
     }
 
