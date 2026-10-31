@@ -220,7 +220,8 @@ struct State {
 
 /// One level's stored terrain, shared by the far-terrain threads. A chunk
 /// only Bobby has is read from Bobby's folder and kept here; one neither has
-/// comes from the server's BlueMap, if the player named it.
+/// comes from the server's BlueMap, if the player named it or Find
+/// BlueMap found it.
 pub struct ServerTerrain {
     dir: PathBuf,
     bobby: Option<Bobby>,
