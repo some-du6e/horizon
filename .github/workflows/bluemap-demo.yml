@@ -1,0 +1,65 @@
+name: bluemap demo
+# Records a video of far terrain drawn from a server's BlueMap web map (tools/demo/bluemap_demo.py):
+# a local world, offscreen on lavapipe under Xvfb, no Minecraft server joined. The runner downloads
+# the pinned Minecraft from Mojang (tools/demo/minecraft.py), as the Horizon launcher does for a
+# player, and prepares resources from it; only the video and the game's log are uploaded. The map's
+# address is the DEMO_BLUEMAP_URL secret.
+on:
+  push:
+    branches: [demo/bluemap-far-terrain]
+  workflow_dispatch:
+
+concurrency:
+  group: bluemap-demo
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bluemap-demo
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Build headers, Vulkan on the CPU, a virtual screen and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth ffmpeg \
+            libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libx11-xcb1
+      - name: Build the game, horizon-ctl and horizon-prepare
+        run: cargo build --profile fast --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare
+      - name: The pinned Minecraft, from Mojang
+        run: python3 tools/demo/minecraft.py "$RUNNER_TEMP/minecraft"
+      - name: Resources prepared from it
+        run: |
+          target/fast/horizon-prepare --prepare --minecraft-dir "$RUNNER_TEMP/minecraft" \
+            --server-jar "$RUNNER_TEMP/minecraft/server.jar" --java-home "$JAVA_HOME" --root "$PWD"
+          target/fast/horizon-prepare --check --root "$PWD"
+      - name: Record the video
+        env:
+          HORIZON_DEMO_BLUEMAP: ${{ secrets.DEMO_BLUEMAP_URL }}
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('research-lock.json'))['minecraft']['version'])")
+          xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/bluemap_demo.py \
+            --game target/fast/horizon-client --ctl target/fast/horizon-ctl \
+            --resources ".local/horizon-client/$version" --out "$RUNNER_TEMP/demo"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bluemap-far-terrain
+          path: |
+            ${{ runner.temp }}/demo/bluemap-far-terrain.mp4
+            ${{ runner.temp }}/demo/game.log
+            ${{ runner.temp }}/demo/status.json
+          if-no-files-found: warn
+          retention-days: 14

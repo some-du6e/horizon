@@ -14136,7 +14136,27 @@ impl Game<'_> {
         }
         self.lod_source_attempted = true;
         let dim = self.dim;
+        // A recorded demo (tools/demo/bluemap_demo.py): a local world draws a web map's far
+        // terrain, as a server's would, without joining any server.
+        let demo = std::env::var("HORIZON_DEMO_BLUEMAP")
+            .ok()
+            .filter(|url| !url.is_empty());
         let source = match (&self.integrated, &self.remote) {
+            _ if demo.is_some() => std::env::current_dir().ok().map(|home| {
+                use horizon_client::{bluemap, server_terrain as terrain};
+                let root = home.join("demo-terrain");
+                let map = Arc::new(bluemap::BlueMap::new(
+                    demo.as_deref().unwrap_or_default(),
+                    self.dim.id(),
+                    Vec::new(),
+                    root.join("BlueMap"),
+                    self.settings.horizon.blue_map.radius_blocks(),
+                    bluemap::Palette::from_game(self.pack.assets.registry, self.res.biomes()),
+                ));
+                map.start();
+                self.lod_blue_map = Some(map.clone());
+                terrain::ServerTerrain::new(root.join("chunks"), None, Some(map)) as _
+            }),
             (Some(server), _) => server.call(move |game| game.lod_source_in(dim)).flatten(),
             // A server's seed is its own: draw what it sent, on this visit and before.
             (None, Some(remote)) => std::env::current_dir().ok().map(|home| {
