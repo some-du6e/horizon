@@ -1,0 +1,108 @@
+name: lod seam compare
+# Films far terrain right past the render distance in two builds (tools/demo/lod_seam.py) and puts
+# them side by side: the last nightly (1da354b) and this fix's branch on today's main. Each build
+# runs offscreen on lavapipe under Xvfb in a new local world. The runner downloads the pinned
+# Minecraft from Mojang (tools/demo/minecraft.py), as the Horizon launcher does for a player, and
+# prepares resources from it; only the frames' comparison and the games' logs are uploaded.
+on:
+  push:
+    branches: [demo/lod-seam-compare]
+  workflow_dispatch:
+
+concurrency:
+  group: lod-seam-compare
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: before
+            repository: horizon-rust/horizon
+            ref: 1da354b67a509812c4141b67de2affd6de65c342
+          - side: after
+            repository: some-du6e/horizon
+            ref: 9a4e65ef6efd21050bc62c4833bb7f4e723ec2bc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          path: game
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: game -> target
+          shared-key: lod-seam-${{ matrix.side }}
+          cache-on-failure: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Build headers, Vulkan on the CPU, a virtual screen and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libegl1 libgl1-mesa-dri xvfb xauth ffmpeg \
+            libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libx11-xcb1
+      - name: Build the game, horizon-ctl and horizon-prepare
+        working-directory: game
+        run: cargo build --profile fast --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare
+      - name: The pinned Minecraft, from Mojang
+        run: python3 tools/demo/minecraft.py "$RUNNER_TEMP/minecraft"
+      - name: Resources prepared from it
+        working-directory: game
+        run: |
+          # Its Java is JAVA_HOME's (setup-java's JDK: the exporters are compiled here).
+          target/fast/horizon-prepare --prepare --minecraft-dir "$RUNNER_TEMP/minecraft" \
+            --server-jar "$RUNNER_TEMP/minecraft/server.jar" --root "$PWD"
+      - name: Vulkan on the CPU (lavapipe)
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES=$icd vulkaninfo --summary
+      - name: Film the far terrain
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('game/research-lock.json'))['minecraft']['version'])")
+          xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/lod_seam.py record \
+            --game game/target/fast/horizon-client --ctl game/target/fast/horizon-ctl \
+            --resources "game/.local/horizon-client/$version" --out "$RUNNER_TEMP/${{ matrix.side }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seam-${{ matrix.side }}
+          path: ${{ runner.temp }}/${{ matrix.side }}
+          if-no-files-found: warn
+          retention-days: 1
+
+  compose:
+    needs: record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seam-*
+          path: ${{ runner.temp }}
+      - name: Side by side
+        run: |
+          python3 tools/demo/lod_seam.py compose "$RUNNER_TEMP/seam-before" "$RUNNER_TEMP/seam-after" \
+            --labels "before: nightly 1da354b" "after: main + fix branch" --out "$RUNNER_TEMP/compare"
+          cp "$RUNNER_TEMP/seam-before/status.json" "$RUNNER_TEMP/compare/before-status.json"
+          cp "$RUNNER_TEMP/seam-after/status.json" "$RUNNER_TEMP/compare/after-status.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lod-seam-compare
+          path: ${{ runner.temp }}/compare
+          retention-days: 14
