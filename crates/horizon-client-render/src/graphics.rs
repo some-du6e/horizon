@@ -354,6 +354,9 @@ pub struct Graphics {
     pub lod_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
     pub far_detail: FarDetail,
+    /// Far terrain from servers' BlueMap web maps; no server has one unless
+    /// the player names it (`blueMap:` lines).
+    pub blue_map: crate::bluemap::Settings,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain.
@@ -412,6 +415,7 @@ impl Default for Graphics {
             preset: Preset::Custom,
             lod_distance: 0,
             far_detail: FarDetail::Full,
+            blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
             entity_culling: false,
             chunk_updates: 0,
@@ -474,6 +478,15 @@ impl Graphics {
                 "preset" => g.preset = Preset::parse(value),
                 "lodDistance" => g.lod_distance = number(g.lod_distance).min(1024),
                 "farDetail" => g.far_detail = FarDetail::parse(value),
+                "blueMapRadius" => {
+                    if let Some(radius) = crate::bluemap::Settings::parse_radius(value) {
+                        g.blue_map.radius = radius;
+                    }
+                }
+                "blueMap" => g
+                    .blue_map
+                    .servers
+                    .extend(crate::bluemap::Settings::parse_server(value)),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
@@ -529,7 +542,7 @@ impl Graphics {
         g
     }
     pub fn serialize(&self) -> String {
-        format!(
+        let mut text = format!(
             "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
@@ -566,7 +579,9 @@ impl Graphics {
             bool_text(self.battery),
             self.api.name(),
             self.shader_pack,
-        )
+        );
+        text += &self.blue_map.serialize();
+        text
     }
     /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
@@ -685,6 +700,15 @@ mod tests {
             preset: Preset::Balanced,
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
+            blue_map: crate::bluemap::Settings {
+                radius: 40,
+                servers: vec![
+                    crate::bluemap::Settings::parse_server(
+                        "play.example.net https://map.example.net nether=world_nether",
+                    )
+                    .unwrap(),
+                ],
+            },
             cave_culling: false,
             entity_culling: true,
             chunk_updates: 12,

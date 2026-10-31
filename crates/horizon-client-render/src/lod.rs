@@ -353,6 +353,32 @@ fn nearly_full(name: &str) -> bool {
             | "minecraft:honey_block"
     ) || name.ends_with("_stairs")
 }
+/// Clears the detail bits of a tile's cells whose chunk lies in `area`, but
+/// for the chunks `kept` (seen in the world): `request_detail` asks for them
+/// again.
+fn forget_detail(
+    key: TileKey,
+    area: [i32; 4],
+    mask: &mut [u64; 4],
+    kept: impl Fn((i32, i32)) -> bool,
+) {
+    let [ox, _, oz] = key.origin();
+    let stride = key.size() / 16;
+    for index in 0..256 {
+        let chunk = (
+            (ox + (index as i32 % 16) * stride).div_euclid(16),
+            (oz + (index as i32 / 16) * stride).div_euclid(16),
+        );
+        let fine = TileKey {
+            x: chunk.0,
+            z: chunk.1,
+            level: 0,
+        };
+        if fine.overlaps(area) && !kept(chunk) {
+            mask[index / 64] &= !(1 << (index % 64));
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TileKey {
     pub x: i32,
@@ -385,6 +411,12 @@ impl TileKey {
         let [x, _, z] = self.origin();
         let gap = |c: i32, lo: i32| i64::from((lo - c).max(c - lo - self.size()).max(0));
         gap(camera[0], x).pow(2) + gap(camera[1], z).pow(2)
+    }
+    /// Whether the tile covers any of the blocks `[x0, z0, x1, z1)`.
+    fn overlaps(self, [x0, z0, x1, z1]: [i32; 4]) -> bool {
+        let [ox, _, oz] = self.origin();
+        let size = self.size();
+        ox < x1 && oz < z1 && ox + size > x0 && oz + size > z0
     }
     fn distance(self, camera: [i32; 2]) -> i32 {
         let [x, _, z] = self.origin();
@@ -653,6 +685,9 @@ pub struct Lod {
     held_sample_at: std::time::Instant,
     /// Each tile's samples, shared with mesh jobs in flight.
     ready: FxHashMap<TileKey, Arc<Vec<Column>>>,
+    /// Sampled tiles whose source has more since (`refresh`): sampled again,
+    /// their old samples drawn meanwhile.
+    stale: FxHashSet<TileKey>,
     active: FxHashSet<TileKey>,
     dirty: FxHashSet<TileKey>,
     removed: Vec<TileKey>,
@@ -897,6 +932,7 @@ impl Lod {
             ready: FxHashMap::default(),
             active: FxHashSet::default(),
             dirty: FxHashSet::default(),
+            stale: FxHashSet::default(),
             removed: Vec::new(),
             covered: FxHashSet::default(),
             covered_bounds: None,
@@ -983,6 +1019,20 @@ impl Lod {
                         self.dirty.insert(key);
                     }
                 }
+            }
+        }
+    }
+    /// The source has new data for the blocks `[x0, z0, x1, z1)` (a map tile
+    /// downloaded since): the tiles over them are sampled again, and their
+    /// chunks' detail asked again, but for the chunks seen in the world.
+    pub fn refresh(&mut self, area: [i32; 4]) {
+        for &key in self.ready.keys() {
+            if !key.overlaps(area) || (key.level == 0 && self.covered.contains(&(key.x, key.z))) {
+                continue;
+            }
+            self.stale.insert(key);
+            if let Some(mask) = self.detail_masks.get_mut(&key) {
+                forget_detail(key, area, mask, |chunk| self.saved.contains_key(&chunk));
             }
         }
     }
@@ -1101,6 +1151,9 @@ impl Lod {
             }
             self.ready.insert(key, Arc::new(samples));
             self.reselect = true;
+            if self.stale.remove(&key) {
+                self.dirty.insert(key);
+            }
         }
     }
     fn finish_detail(&mut self, key: (i32, i32), columns: ReducedColumns) {
@@ -1236,6 +1289,7 @@ impl Lod {
                     self.reduced_detail,
                 );
                 self.ready.retain(|key, _| self.plan.nodes.contains(key));
+                self.stale.retain(|key| self.plan.nodes.contains(key));
                 self.detail_masks
                     .retain(|key, _| self.plan.nodes.contains(key));
                 self.replanned = true;
@@ -1433,7 +1487,7 @@ impl Lod {
             .plan
             .nodes
             .iter()
-            .filter(|key| !self.plan.split.contains(key) && !self.ready.contains_key(key))
+            .filter(|&&key| !self.plan.split.contains(&key) && !self.sampled(key))
             .map(|&key| (i64::from(key.distance(camera)), key))
             .collect();
         // Only the first `free` keys not already pending are taken: the best
@@ -1459,6 +1513,10 @@ impl Lod {
             drop(jobs);
             self.shared.wake.notify_all();
         }
+    }
+    /// Sampled, and not since `refresh`ed.
+    fn sampled(&self, key: TileKey) -> bool {
+        self.ready.contains_key(&key) && !self.stale.contains(&key)
     }
     /// The active tiles inside each of `keys` (finer, so each a descendant).
     fn finer(
@@ -2000,6 +2058,26 @@ mod tests {
         assert_eq!(reduced.get(0, 0, 4).spans, [span(0, 4, 1), span(12, 14, 3)]);
         assert_eq!(reduced.get(4, 8, 4).spans, [span(0, 4, 1)]);
         assert_eq!(reduced.get(0, 0, 16).spans, [span(0, 4, 1)]);
+    }
+    #[test]
+    fn refreshed_areas_forget_detail_but_seen_chunks() {
+        let key = TileKey {
+            x: 1,
+            z: 0,
+            level: 1,
+        };
+        assert!(key.overlaps([40, 0, 50, 1]) && !key.overlaps([64, 0, 80, 32]));
+        // Level 1: 2 × 2 cells a chunk, chunks 2..4 × 0..2.
+        let mut mask = [u64::MAX; 4];
+        forget_detail(key, [48, 0, 64, 16], &mut mask, |_| false);
+        let cleared: Vec<_> = (0..256)
+            .filter(|i| mask[i / 64] & (1 << (i % 64)) == 0)
+            .collect();
+        assert_eq!(cleared.len(), 64);
+        assert!(cleared.contains(&8) && cleared.contains(&(7 * 16 + 15)));
+        let mut mask = [u64::MAX; 4];
+        forget_detail(key, [0, 0, 1024, 1024], &mut mask, |chunk| chunk == (2, 1));
+        assert_eq!(mask.iter().map(|m| m.count_ones()).sum::<u32>(), 64);
     }
     #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]

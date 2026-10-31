@@ -6627,11 +6627,11 @@ mod tests {
             &facts,
             decode_lit,
         );
-        let terrain = ServerTerrain::new(root.join("horizon"), Some(bobby));
+        let terrain = ServerTerrain::new(root.join("horizon"), Some(bobby), None);
         let columns = terrain.chunk(40, -3).expect("Bobby's chunk");
         assert_eq!(columns[9 * 16 + 5].surface.map(|s| s.height), Some(70));
         std::fs::remove_dir_all(&bobby_dir).unwrap();
-        let kept = ServerTerrain::new(root.join("horizon"), None);
+        let kept = ServerTerrain::new(root.join("horizon"), None, None);
         assert_eq!(kept.chunk(40, -3), Some(columns));
         std::fs::remove_dir_all(&root).unwrap();
     }
