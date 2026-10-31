@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev \
-            mesa-vulkan-drivers libvulkan1 xvfb xauth ffmpeg \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libegl1 libgl1-mesa-dri xvfb xauth ffmpeg \
             libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libx11-xcb1
       - name: Build the game, horizon-ctl and horizon-prepare
         run: cargo build --profile fast --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare
@@ -45,10 +45,15 @@ jobs:
           # Its Java is JAVA_HOME's (setup-java's JDK: the exporters are compiled here).
           target/fast/horizon-prepare --prepare --minecraft-dir "$RUNNER_TEMP/minecraft" \
             --server-jar "$RUNNER_TEMP/minecraft/server.jar" --root "$PWD"
+      - name: Vulkan on the CPU (lavapipe)
+        run: |
+          ls /usr/share/vulkan/icd.d/
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES=$icd vulkaninfo --summary
       - name: Record the video
         env:
           HORIZON_DEMO_BLUEMAP: ${{ secrets.DEMO_BLUEMAP_URL }}
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           version=$(python3 -c "import json; print(json.load(open('research-lock.json'))['minecraft']['version'])")
           xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/bluemap_demo.py \
