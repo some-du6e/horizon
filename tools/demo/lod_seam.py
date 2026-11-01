@@ -72,7 +72,7 @@ def record(args) -> None:
         # Noon and clear skies all along: the rules' names differ between versions.
         for rule in ('doDaylightCycle', 'advance_time', 'doWeatherCycle', 'advance_weather'):
             ctl('command', f'gamerule {rule} false', check=False)
-        x, y, z = 0, args.height, 0
+        (x, z), y = args.at, args.height
         if args.biome:
             ctl('command', f'locate biome {args.biome}', timeout=900)
             found = re.findall(r'\[(-?\d+), (-?\d+), (-?\d+)\]', json.dumps(ctl('messages', 5)))
@@ -158,6 +158,8 @@ def main() -> None:
     rec.add_argument('--height', type=int, default=140, help='camera height (y)')
     rec.add_argument('--pitch', type=float, default=15.0, help='degrees below the horizon')
     rec.add_argument('--seconds', type=int, default=300, help='how long to film the loading')
+    rec.add_argument('--at', type=int, nargs=2, default=(0, 0), metavar=('X', 'Z'),
+                     help='film above this column (seed 1: jagged peaks at -55 -1910)')
     rec.add_argument('--biome', help='film above the nearest such biome, e.g. minecraft:jagged_peaks')
     comp = sub.add_parser('compose')
     comp.add_argument('recordings', type=Path, nargs='+')
