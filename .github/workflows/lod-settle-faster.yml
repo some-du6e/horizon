@@ -18,7 +18,7 @@ concurrency:
 
 env:
   BASE_REF: 807fd8b48ab1b5c6e8be041f582230ac675419b0
-  FAST_REF: 807fd8b48ab1b5c6e8be041f582230ac675419b0
+  FAST_REF: 99e71addf808ae095339121f7f2d58e60f9a37b2
 
 jobs:
   test:
