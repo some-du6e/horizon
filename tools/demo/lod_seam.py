@@ -48,26 +48,35 @@ def thread_cpu(pid: int) -> dict:
 
 def settled_at(timeline: list, target='target_tiles', done='sampled_target_tiles') -> float | None:
     """Seconds until the far terrain sampled SETTLED of its target tiles (or, with
-    the detail keys, until SETTLED of its columns have their generated detail)."""
+    the detail keys, until SETTLED of its columns have their generated detail).
+    The target is the last one seen: the detail's grows as tiles are drawn."""
+    final = next((entry[target] for entry in reversed(timeline) if entry.get(target)), None)
     for entry in timeline:
-        target, sampled = entry.get(target), entry.get(done)
-        if target and sampled is not None and sampled >= SETTLED * target:
+        if final and (entry.get(done) or 0) >= SETTLED * final:
             return entry['seconds']
     return None
 
 
 def record(args) -> None:
     out = args.out.resolve()
-    frames = out / 'frames'
     shutil.rmtree(out, ignore_errors=True)
-    frames.mkdir(parents=True)
     # Fresh folders for everything the game writes: no player data is touched.
     home = Path(tempfile.mkdtemp(prefix='horizon-demo-'))
     env = dict(os.environ, HORIZON_HOME=str(home), HORIZON_NO_AUDIO='1', HORIZON_TELEMETRY_URL='off',
                HORIZON_LAUNCHER_NO_SELF_UPDATE='1',
                XDG_DATA_HOME=tempfile.mkdtemp(), XDG_CONFIG_HOME=tempfile.mkdtemp())
     (home / 'horizon-graphics.txt').write_text('lodDistance:64\nfarDetail:full\n')
+    session(args, out, home, env, args.seconds)
+    if args.reopen:
+        # The same world opened again: what the first session saved and cached.
+        session(args, out / 'reopen', home, env, args.reopen)
+
+
+def session(args, out: Path, home: Path, env: dict, seconds: int) -> None:
+    frames = out / 'frames'
+    frames.mkdir(parents=True)
     socket = home / 'ctl.sock'
+    socket.unlink(missing_ok=True)
     log = open(out / 'game.log', 'w')
     game = subprocess.Popen(
         [str(args.game.resolve()), '--resources', str(args.resources.resolve()), '--offscreen',
@@ -114,7 +123,7 @@ def record(args) -> None:
         ctl('key', 'f1', 'tap')
         start = time.time()
         index = 0
-        while index * STEP <= args.seconds:
+        while index * STEP <= seconds:
             # Each frame at its time from the start, whatever the screenshots take.
             wait = start + index * STEP - time.time()
             if wait > 0:
@@ -204,6 +213,8 @@ def main() -> None:
     rec.add_argument('--seconds', type=int, default=300, help='how long to film the loading')
     rec.add_argument('--at', type=int, nargs=2, default=(0, 0), metavar=('X', 'Z'),
                      help='film above this column (seed 1: jagged peaks at -55 -1910)')
+    rec.add_argument('--reopen', type=int, default=0, metavar='SECONDS',
+                     help='then quit, open the same world again and film this long (in reopen/)')
     rec.add_argument('--biome', help='film above the nearest such biome, e.g. minecraft:jagged_peaks')
     comp = sub.add_parser('compose')
     comp.add_argument('recordings', type=Path, nargs='+')

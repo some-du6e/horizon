@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASE_REF: 064cd6c99c0f0cea0d2cdf166b87377d3a6ca47e
-  FAST_REF: e23cc142442f634a335daae047ef8d7ba8e5b29f
+  BASE_REF: 6833b9849400f659581fc1cedf8839d42799dbde
+  FAST_REF: 6833b9849400f659581fc1cedf8839d42799dbde
 
 jobs:
   test:
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        side: [base, fast]
+        side: [fast]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,7 +98,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/lod_seam.py record \
             --game game/target/fast/horizon-client --ctl game/target/fast/horizon-ctl \
             --resources "game/.local/horizon-client/$version" --out "$RUNNER_TEMP/${{ matrix.side }}" \
-            --at -55 -1910 --height 200 --pitch 20 --seconds 900
+            --at -55 -1910 --height 200 --pitch 20 --seconds 600 --reopen 300
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -119,14 +119,13 @@ jobs:
         with:
           pattern: settle-*
           path: ${{ runner.temp }}
-      - name: Side by side
+      - name: A new world against the same world reopened
         run: |
           python3 tools/demo/lod_seam.py compose \
-            "$RUNNER_TEMP/settle-base" "$RUNNER_TEMP/settle-fast" \
-            --labels "1 decoration thread" "2 decoration threads" --out "$RUNNER_TEMP/compare"
-          for side in base fast; do
-            cp "$RUNNER_TEMP/settle-$side/status.json" "$RUNNER_TEMP/compare/$side-status.json"
-          done
+            "$RUNNER_TEMP/settle-fast" "$RUNNER_TEMP/settle-fast/reopen" \
+            --labels "new world" "reopened" --out "$RUNNER_TEMP/compare"
+          cp "$RUNNER_TEMP/settle-fast/status.json" "$RUNNER_TEMP/compare/new-status.json"
+          cp "$RUNNER_TEMP/settle-fast/reopen/status.json" "$RUNNER_TEMP/compare/reopen-status.json"
       - uses: actions/upload-artifact@v4
         with:
           name: lod-settle-compare
