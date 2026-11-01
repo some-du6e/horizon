@@ -1,0 +1,56 @@
+name: bobby observe
+# Runs Bobby (Fabric mod, LGPL-3.0) on a real 26.3 client against local vanilla servers and uploads what
+# it writes to disk, so its cache can be read by Horizon from a description of the files alone. Bobby's
+# jar is only run; its source is never fetched. Fork-only.
+on:
+  push:
+    branches: [ci/bobby-observe]
+  workflow_dispatch:
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Software OpenGL and Vulkan, a virtual screen and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libegl1 libgl1 \
+            libgl1-mesa-dri xvfb xauth ffmpeg libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libx11-xcb1 \
+            libxtst6 libxxf86vm1 libopenal1
+      - name: The pinned Minecraft, from Mojang
+        run: python3 tools/demo/minecraft.py "$RUNNER_TEMP/minecraft"
+      - name: Bobby and Fabric API jars, from Modrinth
+        run: |
+          mkdir -p "$RUNNER_TEMP/mods"
+          curl -fsSL -o "$RUNNER_TEMP/mods/bobby.jar" 'https://cdn.modrinth.com/data/M08ruV16/versions/J7YnfCss/bobby-5.2.16%2Bmc26.3.jar'
+          curl -fsSL -o "$RUNNER_TEMP/mods/fabric-api.jar" 'https://cdn.modrinth.com/data/P7dR8mSH/versions/EQKgpeKu/fabric-api-0.165.0%2B26.3.jar'
+          sha256sum "$RUNNER_TEMP"/mods/*.jar
+      - name: Play with Bobby on three servers
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/bobby_observe.py \
+            "$RUNNER_TEMP/minecraft" "$RUNNER_TEMP/mods" "$RUNNER_TEMP/out/observe"
+      - name: Describe the files
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/out/observe"
+          if [ -d "$out/bobby" ]; then
+            python3 tools/demo/bobby_dump.py "$out/bobby" "$out/server-A-region" > "$out/dump.txt"
+            for d in "$out"/bobby-after-?; do (cd "$d" && find . -type f | sort) > "$d.files.txt"; done
+            head -c 60000 "$out/dump.txt"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bobby-observe
+          path: ${{ runner.temp }}/out/observe
+          retention-days: 30
