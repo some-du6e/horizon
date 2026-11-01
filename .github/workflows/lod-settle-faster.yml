@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASE_REF: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
-  FAST_REF: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
+  BASE_REF: 807fd8b48ab1b5c6e8be041f582230ac675419b0
+  FAST_REF: 807fd8b48ab1b5c6e8be041f582230ac675419b0
 
 jobs:
   test:
