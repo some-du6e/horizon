@@ -2,7 +2,8 @@
 """Film far terrain right past the render distance, for comparing two builds side by side.
 
 `record`: a new local world (seed 1, render distance 12, LOD Distance 64 chunks, Full far detail),
-the HUD hidden, the camera at y=140 above spawn looking a little down. A screenshot every two
+the HUD hidden, the camera at y=140 above spawn looking a little down, or with `--biome`, above
+the nearest such biome (`/locate biome`), 60 blocks over the spot it names if that is higher. A screenshot every two
 seconds while the terrain loads, for `--seconds`, then one towards each of the four directions.
 `compose`: recordings' frames side by side, labelled: a video of the loading and stills at
 fixed times and of the four directions.
@@ -14,6 +15,7 @@ fixed times and of the four directions.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,7 +72,16 @@ def record(args) -> None:
         # Noon and clear skies all along: the rules' names differ between versions.
         for rule in ('doDaylightCycle', 'advance_time', 'doWeatherCycle', 'advance_weather'):
             ctl('command', f'gamerule {rule} false', check=False)
-        ctl('command', f'tp @s 0.5 {args.height} 0.5')
+        x, y, z = 0, args.height, 0
+        if args.biome:
+            ctl('command', f'locate biome {args.biome}', timeout=900)
+            found = re.findall(r'\[(-?\d+), (-?\d+), (-?\d+)\]', json.dumps(ctl('messages', 5)))
+            if not found:
+                sys.exit(f'no {args.biome} found')
+            x, found_y, z = map(int, found[-1])
+            y = max(args.height, found_y + 60)
+            print(f'{args.biome} at {x} {found_y} {z}: the camera at y={y}', flush=True)
+        ctl('command', f'tp @s {x}.5 {y} {z}.5')
         ctl('look', 0, args.pitch)
         ctl('key', 'f1', 'tap')
         start = time.time()
@@ -147,6 +158,7 @@ def main() -> None:
     rec.add_argument('--height', type=int, default=140, help='camera height (y)')
     rec.add_argument('--pitch', type=float, default=15.0, help='degrees below the horizon')
     rec.add_argument('--seconds', type=int, default=300, help='how long to film the loading')
+    rec.add_argument('--biome', help='film above the nearest such biome, e.g. minecraft:jagged_peaks')
     comp = sub.add_parser('compose')
     comp.add_argument('recordings', type=Path, nargs='+')
     comp.add_argument('--labels', nargs='+', required=True)
