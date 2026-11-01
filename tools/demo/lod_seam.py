@@ -24,8 +24,35 @@ import time
 from pathlib import Path
 
 STEP = 2
-STILLS = (10, 30, 60, 120, 240)
+SETTLED = 0.95
+STILLS = (10, 30, 60, 120, 180, 240, 360)
 DIRECTIONS = (0, 90, 180, 270)
+
+
+def thread_cpu(pid: int) -> dict:
+    """CPU seconds so far of each of the process's threads, summed by thread name
+    (llvmpipe-0..n as llvmpipe): where the far terrain's time goes."""
+    tick = os.sysconf('SC_CLK_TCK')
+    total = {}
+    for task in Path(f'/proc/{pid}/task').glob('*'):
+        try:
+            stat = (task / 'stat').read_text()
+        except OSError:
+            continue
+        name = stat[stat.index('(') + 1:stat.rindex(')')]
+        fields = stat[stat.rindex(')') + 2:].split()
+        name = re.sub(r'[-:]?\d+$', '', name)
+        total[name] = round(total.get(name, 0) + (int(fields[11]) + int(fields[12])) / tick, 2)
+    return dict(sorted(total.items(), key=lambda item: -item[1]))
+
+
+def settled_at(timeline: list) -> float | None:
+    """Seconds until the far terrain sampled SETTLED of its target tiles."""
+    for entry in timeline:
+        target, sampled = entry.get('target_tiles'), entry.get('sampled_target_tiles')
+        if target and sampled is not None and sampled >= SETTLED * target:
+            return entry['seconds']
+    return None
 
 
 def record(args) -> None:
@@ -92,16 +119,26 @@ def record(args) -> None:
             if wait > 0:
                 time.sleep(wait)
             ctl('screenshot', frames / f'{index:05d}.png')
-            lod = ctl('status').get('lod', {})
+            status = ctl('status')
+            lod = status.get('lod', {})
             timeline.append({'seconds': round(time.time() - start, 1), **{
-                k: lod.get(k) for k in ('target_tiles', 'sampled_target_tiles', 'active_tiles')}})
+                k: lod.get(k) for k in ('target_tiles', 'sampled_target_tiles', 'active_tiles',
+                                        'refined_samples', 'resident_quads')},
+                'fps': status.get('fps'), 'frames': status.get('frames'),
+                'streaming': status.get('streaming')})
+            if index % 5 == 0:
+                timeline[-1]['threads'] = thread_cpu(game.pid)
             print(f'{timeline[-1]}', flush=True)
             index += 1
         for yaw in DIRECTIONS:
             ctl('look', yaw, args.pitch)
             time.sleep(3)
             ctl('screenshot', out / f'yaw{yaw}.png')
-        (out / 'status.json').write_text(json.dumps({'timeline': timeline, 'final': ctl('status')}, indent=2))
+        settled = settled_at(timeline)
+        print(f'settled ({SETTLED:.0%} of target tiles sampled) at {settled} s', flush=True)
+        (out / 'status.json').write_text(json.dumps(
+            {'settled_seconds': settled, 'timeline': timeline, 'threads': thread_cpu(game.pid),
+             'final': ctl('status')}, indent=2))
         ctl('quit', check=False)
     finally:
         try:
@@ -144,6 +181,9 @@ def compose(args) -> None:
     for yaw in DIRECTIONS:
         row([['-i', side / f'yaw{yaw}.png'] for side in sides],
             out / f'settled-yaw{yaw}.png', ['-frames:v', '1'])
+    for label, side in zip(args.labels, sides):
+        status = json.loads((side / 'status.json').read_text())
+        print(f'{label}: settled at {status.get("settled_seconds")} s; threads {status.get("threads")}')
     print(f'{out}: {count} frames a side')
 
 

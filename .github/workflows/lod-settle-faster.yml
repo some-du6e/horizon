@@ -1,18 +1,24 @@
-name: lod seam compare
-# Films far terrain right past the render distance in three builds (tools/demo/lod_seam.py) and
-# puts them side by side: the last nightly (1da354b), today's main (planned tiles only, nearest
-# first) and the fix branch's coarse backdrop. The test job runs the far terrain's tests. Each build
-# runs offscreen on lavapipe under Xvfb in a new local world. The runner downloads the pinned
-# Minecraft from Mojang (tools/demo/minecraft.py), as the Horizon launcher does for a player, and
-# prepares resources from it; only the frames' comparison and the games' logs are uploaded.
+name: lod settle faster
+# Films far terrain right past the render distance in two builds (tools/demo/lod_seam.py) and
+# puts them side by side: fix/lod-near-detail (the seam first, then the coarse backdrop) and
+# perf/lod-settle-faster on top of it. Each recording keeps a status timeline (the share of far
+# tiles sampled, fps) and every thread's CPU time, and reports when 95% of the tiles were sampled.
+# Each build runs offscreen on lavapipe under Xvfb in a new local world. The runner downloads the
+# pinned Minecraft from Mojang (tools/demo/minecraft.py), as the Horizon launcher does for a
+# player, and prepares resources from it; only the frames' comparison and the games' logs are
+# uploaded. The test job runs the far terrain's tests on the faster build.
 on:
   push:
-    branches: [demo/lod-seam-compare]
+    branches: [demo/lod-settle-faster]
   workflow_dispatch:
 
 concurrency:
-  group: lod-seam-compare
+  group: lod-settle-faster
   cancel-in-progress: true
+
+env:
+  BASE_REF: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
+  FAST_REF: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
 
 jobs:
   test:
@@ -22,17 +28,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: some-du6e/horizon
-          ref: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
+          ref: ${{ env.FAST_REF }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: lod-seam-test
+          shared-key: lod-settle-test
           cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
-      - run: cargo fmt -p horizon-client-render -- --check
+      - run: cargo fmt -p horizon-client-render -p horizon-client -- --check
       - run: cargo clippy -p horizon-client-render --lib --tests --locked -- -D warnings
       - run: cargo test -p horizon-client-render --lib --locked lod
 
@@ -42,34 +48,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - side: before
-            repository: horizon-rust/horizon
-            ref: 1da354b67a509812c4141b67de2affd6de65c342
-            cache: before
-          - side: main
-            repository: some-du6e/horizon
-            ref: 9a4e65ef6efd21050bc62c4833bb7f4e723ec2bc
-            cache: after
-          - side: backdrop
-            repository: some-du6e/horizon
-            ref: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
-            cache: after
+        side: [base, fast]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: ${{ matrix.repository }}
-          ref: ${{ matrix.ref }}
+          repository: some-du6e/horizon
+          ref: ${{ matrix.side == 'base' && env.BASE_REF || env.FAST_REF }}
           path: game
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: game -> target
-          shared-key: lod-seam-${{ matrix.cache }}
+          shared-key: lod-settle-${{ matrix.side }}
           cache-on-failure: true
       - uses: actions/setup-java@v4
         with:
@@ -97,20 +91,21 @@ jobs:
           icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
           VK_ICD_FILENAMES=$icd vulkaninfo --summary
+          nproc
       - name: Film the far terrain
         run: |
           version=$(python3 -c "import json; print(json.load(open('game/research-lock.json'))['minecraft']['version'])")
           xvfb-run -a -s "-screen 0 1280x720x24" python3 tools/demo/lod_seam.py record \
             --game game/target/fast/horizon-client --ctl game/target/fast/horizon-ctl \
             --resources "game/.local/horizon-client/$version" --out "$RUNNER_TEMP/${{ matrix.side }}" \
-            --at -55 -1910 --height 200 --pitch 20 --seconds 360
+            --at -55 -1910 --height 200 --pitch 20 --seconds 480
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: seam-${{ matrix.side }}
+          name: settle-${{ matrix.side }}
           path: ${{ runner.temp }}/${{ matrix.side }}
           if-no-files-found: warn
-          retention-days: 1
+          retention-days: 3
 
   compose:
     needs: record
@@ -122,18 +117,18 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - uses: actions/download-artifact@v4
         with:
-          pattern: seam-*
+          pattern: settle-*
           path: ${{ runner.temp }}
       - name: Side by side
         run: |
           python3 tools/demo/lod_seam.py compose \
-            "$RUNNER_TEMP/seam-before" "$RUNNER_TEMP/seam-main" "$RUNNER_TEMP/seam-backdrop" \
-            --labels "nightly 1da354b" "main" "main + backdrop" --out "$RUNNER_TEMP/compare"
-          for side in before main backdrop; do
-            cp "$RUNNER_TEMP/seam-$side/status.json" "$RUNNER_TEMP/compare/$side-status.json"
+            "$RUNNER_TEMP/settle-base" "$RUNNER_TEMP/settle-fast" \
+            --labels "fix/lod-near-detail" "perf/lod-settle-faster" --out "$RUNNER_TEMP/compare"
+          for side in base fast; do
+            cp "$RUNNER_TEMP/settle-$side/status.json" "$RUNNER_TEMP/compare/$side-status.json"
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: lod-seam-compare
+          name: lod-settle-compare
           path: ${{ runner.temp }}/compare
           retention-days: 14
