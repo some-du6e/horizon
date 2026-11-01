@@ -110,7 +110,7 @@ def scenario(label, port, seed, address, mc, server_jar, game_dir, launch, out):
     server_dir.mkdir(parents=True)
     (server_dir / 'eula.txt').write_text('eula=true\n')
     (server_dir / 'server.properties').write_text('\n'.join([
-        'online-mode=false', 'enforce-secure-profile=false', f'server-port={port}', f'level-seed={seed}',
+        'online-mode=false', 'white-list=false', 'enforce-whitelist=false', 'enforce-secure-profile=false', f'server-port={port}', f'level-seed={seed}',
         'view-distance=4', 'simulation-distance=4', 'spawn-protection=0', 'spawn-monsters=false', 'motd=observe',
     ]) + '\n')
     server = Proc(f'server-{label}', ['java', '-Xmx2G', '-jar', str(server_jar), 'nogui'], server_dir,
