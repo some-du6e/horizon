@@ -641,7 +641,12 @@ impl HudAtlas {
             // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
             // (those beside their texture too) counts, in name order, and those past the budget
             // stay out (their mobs wear the texture itself), not the whole pack.
-            let overlays: HashSet<PathBuf> = emissive.files().map(|(f, _)| root.join(f)).collect();
+            // Overlays and blink frames only after every variant.
+            let overlays: HashSet<PathBuf> = emissive
+                .files()
+                .chain(blinks.files())
+                .map(|(f, _)| root.join(f))
+                .collect();
             let kept = budgeted(named.keys(), &overlays, RANDOM_TEXELS);
             if kept.len() < named.len() {
                 log::warn!(
