@@ -4,7 +4,7 @@
 `record`: a new local world (seed 1, render distance 12, LOD Distance 64 chunks, Full far detail),
 the HUD hidden, the camera at y=140 above spawn looking a little down. A screenshot every two
 seconds while the terrain loads, for `--seconds`, then one towards each of the four directions.
-`compose`: two recordings' frames side by side, labelled: a video of the loading and stills at
+`compose`: recordings' frames side by side, labelled: a video of the loading and stills at
 fixed times and of the four directions.
 
     python3 tools/demo/lod_seam.py record --game target/fast/horizon-client \\
@@ -103,33 +103,36 @@ def record(args) -> None:
 def compose(args) -> None:
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    left, right = (path.resolve() for path in args.recordings)
+    sides = [path.resolve() for path in args.recordings]
+    if len(args.labels) != len(sides):
+        sys.exit('one label per recording')
     font = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    width = 1920 // len(sides) // 2 * 2
 
     def label(text: str) -> str:
         text = text.replace(':', r'\:')
-        return (f"scale=960:540,drawtext=fontfile={font}:text='{text}':x=16:y=16:fontsize=30:"
+        return (f"scale={width}:-2,drawtext=fontfile={font}:text='{text}':x=12:y=12:fontsize=26:"
                 f"fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8")
 
-    def pair(a: list, b: list, target: Path, extra: list) -> None:
-        graph = (f'[0:v]{label(args.labels[0])}[l];[1:v]{label(args.labels[1])}[r];'
-                 f'[l][r]hstack=inputs=2:shortest=1')
-        subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', *a, *b, '-filter_complex', graph,
-                        *extra, target], check=True)
+    def row(inputs: list, target: Path, extra: list) -> None:
+        graph = ''.join(f'[{i}:v]{label(text)}[s{i}];' for i, text in enumerate(args.labels))
+        graph += ''.join(f'[s{i}]' for i in range(len(sides)))
+        graph += f'hstack=inputs={len(sides)}:shortest=1'
+        subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', *(a for i in inputs for a in i),
+                        '-filter_complex', graph, *extra, target], check=True)
 
-    count = min(len(list((side / 'frames').glob('*.png'))) for side in (left, right))
+    count = min(len(list((side / 'frames').glob('*.png'))) for side in sides)
     # The loading at five times its speed (a frame every two seconds, shown at 2.5 a second).
-    pair(['-framerate', '2.5', '-i', left / 'frames' / '%05d.png'],
-         ['-framerate', '2.5', '-i', right / 'frames' / '%05d.png'], out / 'loading.mp4',
-         ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30'])
+    row([['-framerate', '2.5', '-i', side / 'frames' / '%05d.png'] for side in sides],
+        out / 'loading.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30'])
     for seconds in STILLS:
         frame = f'{seconds // STEP:05d}.png'
-        if (left / 'frames' / frame).exists() and (right / 'frames' / frame).exists():
-            pair(['-i', left / 'frames' / frame], ['-i', right / 'frames' / frame],
-                 out / f'at-{seconds:03d}s.png', ['-frames:v', '1'])
+        if all((side / 'frames' / frame).exists() for side in sides):
+            row([['-i', side / 'frames' / frame] for side in sides],
+                out / f'at-{seconds:03d}s.png', ['-frames:v', '1'])
     for yaw in DIRECTIONS:
-        pair(['-i', left / f'yaw{yaw}.png'], ['-i', right / f'yaw{yaw}.png'],
-             out / f'settled-yaw{yaw}.png', ['-frames:v', '1'])
+        row([['-i', side / f'yaw{yaw}.png'] for side in sides],
+            out / f'settled-yaw{yaw}.png', ['-frames:v', '1'])
     print(f'{out}: {count} frames a side')
 
 
@@ -145,8 +148,8 @@ def main() -> None:
     rec.add_argument('--pitch', type=float, default=15.0, help='degrees below the horizon')
     rec.add_argument('--seconds', type=int, default=300, help='how long to film the loading')
     comp = sub.add_parser('compose')
-    comp.add_argument('recordings', type=Path, nargs=2)
-    comp.add_argument('--labels', nargs=2, required=True)
+    comp.add_argument('recordings', type=Path, nargs='+')
+    comp.add_argument('--labels', nargs='+', required=True)
     comp.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     record(args) if args.mode == 'record' else compose(args)
