@@ -134,7 +134,7 @@ def session(args, out: Path, home: Path, env: dict, seconds: int) -> None:
             timeline.append({'seconds': round(time.time() - start, 1), **{
                 k: lod.get(k) for k in ('target_tiles', 'sampled_target_tiles', 'active_tiles',
                                         'refined_samples', 'resident_quads',
-                                        'detail_target_columns', 'detailed_target_columns')},
+                                        'detail_target_columns', 'refined_target_columns')},
                 'fps': status.get('fps'), 'frames': status.get('frames'),
                 'streaming': status.get('streaming')})
             if index % 5 == 0:
@@ -146,7 +146,7 @@ def session(args, out: Path, home: Path, env: dict, seconds: int) -> None:
             time.sleep(3)
             ctl('screenshot', out / f'yaw{yaw}.png')
         settled = settled_at(timeline)
-        detailed = settled_at(timeline, 'detail_target_columns', 'detailed_target_columns')
+        detailed = settled_at(timeline, 'detail_target_columns', 'refined_target_columns')
         print(f'settled ({SETTLED:.0%} of target tiles sampled) at {settled} s; '
               f'{SETTLED:.0%} of the detail at {detailed} s', flush=True)
         (out / 'status.json').write_text(json.dumps(
