@@ -2748,6 +2748,19 @@ impl Game<'_> {
         };
         let overlay = u32::from(d.hurt_time > 0);
         horizon_client::mobs::render::draw(model, base, &poses, skin, color, light, overlay, out);
+        // The skin's OptiFine emissive overlay, full bright.
+        let glow = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay("entity/enderdragon/dragon")
+            .and_then(|e| sprite(e));
+        if let Some(glow) = glow {
+            let full = horizon_client::mobs::render::FULL_BRIGHT;
+            horizon_client::mobs::render::draw(model, base, &poses, glow, color, full, 0, out);
+        }
         // RenderTypes.eyes: the glowing eyes, added on top.
         let mut eye_quads = Vec::new();
         horizon_client::mobs::render::draw(
