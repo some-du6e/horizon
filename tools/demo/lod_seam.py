@@ -46,10 +46,11 @@ def thread_cpu(pid: int) -> dict:
     return dict(sorted(total.items(), key=lambda item: -item[1]))
 
 
-def settled_at(timeline: list) -> float | None:
-    """Seconds until the far terrain sampled SETTLED of its target tiles."""
+def settled_at(timeline: list, target='target_tiles', done='sampled_target_tiles') -> float | None:
+    """Seconds until the far terrain sampled SETTLED of its target tiles (or, with
+    the detail keys, until SETTLED of its columns have their generated detail)."""
     for entry in timeline:
-        target, sampled = entry.get('target_tiles'), entry.get('sampled_target_tiles')
+        target, sampled = entry.get(target), entry.get(done)
         if target and sampled is not None and sampled >= SETTLED * target:
             return entry['seconds']
     return None
@@ -123,7 +124,8 @@ def record(args) -> None:
             lod = status.get('lod', {})
             timeline.append({'seconds': round(time.time() - start, 1), **{
                 k: lod.get(k) for k in ('target_tiles', 'sampled_target_tiles', 'active_tiles',
-                                        'refined_samples', 'resident_quads')},
+                                        'refined_samples', 'resident_quads',
+                                        'detail_target_columns', 'detailed_target_columns')},
                 'fps': status.get('fps'), 'frames': status.get('frames'),
                 'streaming': status.get('streaming')})
             if index % 5 == 0:
@@ -135,9 +137,11 @@ def record(args) -> None:
             time.sleep(3)
             ctl('screenshot', out / f'yaw{yaw}.png')
         settled = settled_at(timeline)
-        print(f'settled ({SETTLED:.0%} of target tiles sampled) at {settled} s', flush=True)
+        detailed = settled_at(timeline, 'detail_target_columns', 'detailed_target_columns')
+        print(f'settled ({SETTLED:.0%} of target tiles sampled) at {settled} s; '
+              f'{SETTLED:.0%} of the detail at {detailed} s', flush=True)
         (out / 'status.json').write_text(json.dumps(
-            {'settled_seconds': settled, 'timeline': timeline, 'threads': thread_cpu(game.pid),
+            {'settled_seconds': settled, 'detailed_seconds': detailed, 'timeline': timeline, 'threads': thread_cpu(game.pid),
              'final': ctl('status')}, indent=2))
         ctl('quit', check=False)
     finally:
@@ -183,7 +187,7 @@ def compose(args) -> None:
             out / f'settled-yaw{yaw}.png', ['-frames:v', '1'])
     for label, side in zip(args.labels, sides):
         status = json.loads((side / 'status.json').read_text())
-        print(f'{label}: settled at {status.get("settled_seconds")} s; threads {status.get("threads")}')
+        print(f'{label}: settled at {status.get("settled_seconds")} s, detailed at {status.get("detailed_seconds")} s; threads {status.get("threads")}')
     print(f'{out}: {count} frames a side')
 
 
