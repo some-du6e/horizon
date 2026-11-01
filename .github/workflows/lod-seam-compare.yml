@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: some-du6e/horizon
-          ref: 63eb8a3b8c332b3893e57387ec3fe01a4c336778
+          ref: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -53,7 +53,7 @@ jobs:
             cache: after
           - side: backdrop
             repository: some-du6e/horizon
-            ref: 63eb8a3b8c332b3893e57387ec3fe01a4c336778
+            ref: 2c4c4f83d0bf60d0916d4c73032b7b846559ddcc
             cache: after
     steps:
       - uses: actions/checkout@v4
