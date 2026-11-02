@@ -13080,8 +13080,9 @@ impl Game<'_> {
             let mut canceled = false;
             self.native_fill_bucket(stack, target, &mut canceled);
             // `mayUseItemAt(blockPos2)`: a block that refuses the fluid passes
-            // it to the block beside, so a mod hears that block too.
-            if !canceled && hit.beside() != target {
+            // it to the block beside, so a mod hears that block too (powder
+            // snow places like a block and never goes there).
+            if !canceled && content != BucketContent::Powder && hit.beside() != target {
                 self.native_fill_bucket(stack, hit.beside(), &mut canceled);
             }
             if canceled {
