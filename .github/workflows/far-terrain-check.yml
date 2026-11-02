@@ -1,0 +1,66 @@
+name: far terrain check
+# Fork-only: checks each layer of the far-terrain PR stack builds, and runs
+# the touched crates' lints and tests on the top one.
+on:
+  push:
+    branches: [ci/far-terrain]
+  workflow_dispatch:
+concurrency:
+  group: far-terrain-check
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+jobs:
+  layers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer:
+          - { name: 1-kept-chunks, sha: 7d95db693f61cc3a22d8817e65e527bf8982e18c }
+          - { name: 2a-bluemap-format, sha: 76d4f7058abe84a550144a434a307b81c3865938 }
+          - { name: 2b-bluemap, sha: b899e4c20007920cf1117129558ae7be02368b55 }
+          - { name: 3a-find-bluemap, sha: 0e7b0899a881ddba00a3e6c4552853b6736ab790 }
+          - { name: 3-perf, sha: 5a50f85880757da7d3a136ec06e7c7e85d2be4fd }
+          - { name: 4a-slab, sha: c0c6fa6b1776c209f5c60d0fff2f44ec95bd6e43 }
+          - { name: 4b-resample, sha: 9df7144bde3f72f9df6ac23f25878f81ddb6c245 }
+          - { name: 4c-waited, sha: 497db27914ce5e37a59dd6d6de89c7ce5d95da91 }
+    name: check ${{ matrix.layer.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.layer.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: far-terrain
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - run: cargo clippy --locked -p horizon-client-render -p horizon-client -p horizon-client-lib -p horizon-mods --all-targets -- -D warnings
+      - run: cargo test --locked -p horizon-client-render --lib
+  top:
+    runs-on: ubuntu-latest
+    name: lint and test 4-gaps
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3acfde75ba69a52c207861728a59060d5bf36967
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: far-terrain
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked -p horizon-client-render -p horizon-client -p horizon-client-lib -p horizon-mods --all-targets -- -D warnings
+      - run: cargo test --locked -p horizon-client-render --lib
+      - run: cargo test --locked -p horizon-mods --lib modpack
+      - run: cargo test --locked -p horizon-client --lib --bins --tests
+      - run: cargo test --locked -p horizon-client-lib --lib
