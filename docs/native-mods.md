@@ -1360,7 +1360,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   before any is hit; take out the ones to spare. Entities are hurt as before.
 - **`native_fill_bucket(stack, pos, canceled)`** and **`native_attack_entity(entity, kind, pos, canceled)`** (API 22):
   a player's bucket at a block, and their blow on an entity, with the acting player swapped in. Canceled, the bucket
-  does nothing and the blow does no harm.
+  does nothing and the blow does no harm. A filled bucket also asks about the block beside the clicked face when
+  that block is not its target: a block that refuses the fluid passes it there.
 
 ### Mobs
 
