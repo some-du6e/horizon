@@ -1,0 +1,81 @@
+name: far terrain bobby check
+# Fork-only: the Bobby cache layer on top of the far-terrain stack. Lints and tests the touched
+# crates, then prepares 26.3's resources from Mojang and runs the tests that need them, one of
+# them against a real .bobby folder (the bobby-observe run's artifact).
+on:
+  push:
+    branches: [ci/far-terrain-bobby]
+  workflow_dispatch:
+concurrency:
+  group: far-terrain-bobby-check
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+  LAYER: cf539427be0970952b2b519ea108b32067e59fc6
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: lint and test 5-bobby
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LAYER }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: far-terrain
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked -p horizon-client-render -p horizon-client -p horizon-client-lib -p horizon-mods --all-targets -- -D warnings
+      - run: cargo test --locked -p horizon-client-render --lib
+      - run: cargo test --locked -p horizon-client --lib --bins --tests
+      - run: cargo test --locked -p horizon-client-lib --lib
+  resources:
+    runs-on: ubuntu-latest
+    name: with prepared resources and a real .bobby
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LAYER }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: far-terrain-resources
+          cache-on-failure: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - name: The pinned Minecraft, from Mojang
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p tools/demo
+          gh api "repos/${{ github.repository }}/contents/tools/demo/minecraft.py?ref=ci/bobby-observe" --jq .content | base64 -d > tools/demo/minecraft.py
+          python3 tools/demo/minecraft.py "$RUNNER_TEMP/minecraft"
+      - name: Resources prepared from it
+        run: |
+          cargo build --profile fast --locked -p horizon-prepare --bin horizon-prepare
+          target/fast/horizon-prepare --prepare --minecraft-dir "$RUNNER_TEMP/minecraft" \
+            --server-jar "$RUNNER_TEMP/minecraft/server.jar" --root "$PWD"
+      - name: The .bobby folder Bobby wrote (bobby-observe run 41362977525)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 41362977525 -R "${{ github.repository }}" -n bobby-observe -D "$RUNNER_TEMP/observe"
+          find "$RUNNER_TEMP/observe/bobby" -maxdepth 4 -type d
+      - name: The tests that need them
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('research-lock.json'))['minecraft']['version'])")
+          export HORIZON_TEST_RESOURCES="$PWD/.local/horizon-client/$version"
+          export HORIZON_TEST_BOBBY="$RUNNER_TEMP/observe/bobby"
+          test -d "$HORIZON_TEST_RESOURCES"
+          cargo test --locked -p horizon-client-lib --lib far_terrain_reads -- --nocapture
