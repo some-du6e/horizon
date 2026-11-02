@@ -1,5 +1,5 @@
 name: main snapshot
-# A build of main for trying merged changes before the next Nightly: the game and horizon-ctl, no installer.
+# A build of main for trying merged changes before the next Nightly: the game program, no installer.
 on:
   workflow_dispatch:
   push:
@@ -24,8 +24,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
-      - run: cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl
-      - run: mkdir out && cp target/release/horizon-client${{ matrix.exe }} target/release/horizon-ctl${{ matrix.exe }} out/
+      - run: cargo build --release --locked -p horizon-client --bin horizon-client
+      - run: mkdir out && cp target/release/horizon-client${{ matrix.exe }} out/
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-main-${{ matrix.name }}
