@@ -1,0 +1,33 @@
+name: main snapshot
+# A build of main for trying merged changes before the next Nightly: the game and horizon-ctl, no installer.
+on:
+  workflow_dispatch:
+  push:
+    branches: [build/main-snapshot]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-22.04 }
+          - { name: windows, os: windows-latest, exe: .exe, rustflags: -C target-feature=+crt-static }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - run: cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl
+      - run: mkdir out && cp target/release/horizon-client${{ matrix.exe }} target/release/horizon-ctl${{ matrix.exe }} out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-main-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
